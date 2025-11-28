@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import traceback
@@ -12,20 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # Additional imports for document fetching
 from sqlalchemy.future import select
 
-from app.db import Document, SearchSpace
+from app.db import Document
 from app.services.connector_service import ConnectorService
 from app.services.query_service import QueryService
 
 from .configuration import Configuration, SearchMode
-from .prompts import (
-    get_answer_outline_system_prompt,
-    get_further_questions_system_prompt,
-)
+from .prompts import get_further_questions_system_prompt
 from .qna_agent.graph import graph as qna_agent_graph
 from .state import State
-from .sub_section_writer.configuration import SubSectionType
-from .sub_section_writer.graph import graph as sub_section_writer_graph
-from .utils import AnswerOutline, get_connector_emoji, get_connector_friendly_name
+from .utils import get_connector_emoji, get_connector_friendly_name
 
 
 def extract_sources_from_documents(
@@ -71,9 +65,7 @@ def extract_sources_from_documents(
             source = {
                 "id": doc.get("chunk_id", source_id_counter),
                 "title": document_info.get("title", "Untitled Document"),
-                "description": doc.get("content", "")[:100] + "..."
-                if len(doc.get("content", "")) > 100
-                else doc.get("content", ""),
+                "description": doc.get("content", "").strip(),
                 "url": metadata.get("url", metadata.get("page_url", "")),
             }
 
@@ -100,19 +92,18 @@ def extract_sources_from_documents(
 
 
 async def fetch_documents_by_ids(
-    document_ids: list[int], user_id: str, db_session: AsyncSession
+    document_ids: list[int], search_space_id: int, db_session: AsyncSession
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
-    Fetch documents by their IDs with ownership check using DOCUMENTS mode approach.
+    Fetch documents by their IDs within a search space.
 
-    This function ensures that only documents belonging to the user are fetched,
-    providing security by checking ownership through SearchSpace association.
+    This function ensures that only documents belonging to the search space are fetched.
     Similar to SearchMode.DOCUMENTS, it fetches full documents and concatenates their chunks.
     Also creates source objects for UI display, grouped by document type.
 
     Args:
         document_ids: List of document IDs to fetch
-        user_id: The user ID to check ownership
+        search_space_id: The search space ID to filter by
         db_session: The database session
 
     Returns:
@@ -122,11 +113,12 @@ async def fetch_documents_by_ids(
         return [], []
 
     try:
-        # Query documents with ownership check
+        # Query documents filtered by search space
         result = await db_session.execute(
-            select(Document)
-            .join(SearchSpace)
-            .filter(Document.id.in_(document_ids), SearchSpace.user_id == user_id)
+            select(Document).filter(
+                Document.id.in_(document_ids),
+                Document.search_space_id == search_space_id,
+            )
         )
         documents = result.scalars().all()
 
@@ -204,11 +196,7 @@ async def fetch_documents_by_ids(
                         title += f" ({issue_state})"
 
                     # Create description
-                    description = (
-                        doc.content[:100] + "..."
-                        if len(doc.content) > 100
-                        else doc.content
-                    )
+                    description = doc.content
                     if comment_count:
                         description += f" | Comments: {comment_count}"
 
@@ -229,11 +217,7 @@ async def fetch_documents_by_ids(
                     if message_date:
                         title += f" ({message_date})"
 
-                    description = (
-                        doc.content[:100] + "..."
-                        if len(doc.content) > 100
-                        else doc.content
-                    )
+                    description = doc.content
                     url = (
                         f"https://slack.com/app_redirect?channel={channel_id}"
                         if channel_id
@@ -246,11 +230,7 @@ async def fetch_documents_by_ids(
                     page_id = metadata.get("page_id", "")
 
                     title = f"Notion: {page_title}"
-                    description = (
-                        doc.content[:100] + "..."
-                        if len(doc.content) > 100
-                        else doc.content
-                    )
+                    description = doc.content
                     url = (
                         f"https://notion.so/{page_id.replace('-', '')}"
                         if page_id
@@ -261,11 +241,7 @@ async def fetch_documents_by_ids(
                     title = f"GitHub: {doc.title}"
                     description = metadata.get(
                         "description",
-                        (
-                            doc.content[:100] + "..."
-                            if len(doc.content) > 100
-                            else doc.content
-                        ),
+                        (doc.content),
                     )
                     url = metadata.get("url", "")
 
@@ -281,11 +257,7 @@ async def fetch_documents_by_ids(
 
                     description = metadata.get(
                         "description",
-                        (
-                            doc.content[:100] + "..."
-                            if len(doc.content) > 100
-                            else doc.content
-                        ),
+                        (doc.content),
                     )
                     url = (
                         f"https://www.youtube.com/watch?v={video_id}"
@@ -304,11 +276,7 @@ async def fetch_documents_by_ids(
                     if message_date:
                         title += f" ({message_date})"
 
-                    description = (
-                        doc.content[:100] + "..."
-                        if len(doc.content) > 100
-                        else doc.content
-                    )
+                    description = doc.content
 
                     if guild_id and channel_id:
                         url = f"https://discord.com/channels/{guild_id}/{channel_id}"
@@ -329,11 +297,7 @@ async def fetch_documents_by_ids(
                     if status:
                         title += f" ({status})"
 
-                    description = (
-                        doc.content[:100] + "..."
-                        if len(doc.content) > 100
-                        else doc.content
-                    )
+                    description = doc.content
                     if priority:
                         description += f" | Priority: {priority}"
                     if issue_type:
@@ -395,11 +359,7 @@ async def fetch_documents_by_ids(
                         except Exception:
                             pass
 
-                    description = (
-                        doc.content[:100] + "..."
-                        if len(doc.content) > 100
-                        else doc.content
-                    )
+                    description = doc.content
                     if location:
                         description += f" | Location: {location}"
                     if calendar_id and calendar_id != "primary":
@@ -437,11 +397,8 @@ async def fetch_documents_by_ids(
                         except Exception:
                             pass
 
-                    description = (
-                        doc.content[:100] + "..."
-                        if len(doc.content) > 100
-                        else doc.content
-                    )
+                    description = doc.content
+
                     if location_name:
                         description += f" | Venue: {location_name}"
                     elif meeting_url:
@@ -466,11 +423,7 @@ async def fetch_documents_by_ids(
                         )
                         title += f" (visited: {formatted_date})"
 
-                    description = (
-                        doc.content[:100] + "..."
-                        if len(doc.content) > 100
-                        else doc.content
-                    )
+                    description = doc.content
                     url = webpage_url
 
                 elif doc_type == "CRAWLED_URL":
@@ -479,22 +432,34 @@ async def fetch_documents_by_ids(
                         "og:description",
                         metadata.get(
                             "ogDescription",
-                            (
-                                doc.content[:100] + "..."
-                                if len(doc.content) > 100
-                                else doc.content
-                            ),
+                            (doc.content),
                         ),
                     )
                     url = metadata.get("url", "")
 
-                else:  # FILE and other types
-                    title = doc.title
-                    description = (
+                elif doc_type == "ELASTICSEARCH_CONNECTOR":
+                    # Prefer explicit title in metadata/source, otherwise fallback to doc.title
+                    es_title = (
+                        metadata.get("title")
+                        or metadata.get("es_title")
+                        or doc.title
+                        or f"Elasticsearch: {metadata.get('elasticsearch_index', '')}"
+                    )
+                    title = es_title
+                    description = metadata.get("description") or (
                         doc.content[:100] + "..."
                         if len(doc.content) > 100
                         else doc.content
                     )
+                    # If a link or index info is stored, surface it
+                    url = metadata.get("url", "") or metadata.get(
+                        "elasticsearch_index", ""
+                    )
+
+                else:  # FILE and other types
+                    title = doc.title
+                    description = doc.content
+
                     url = metadata.get("url", "")
 
                 # Create source entry
@@ -512,6 +477,7 @@ async def fetch_documents_by_ids(
                 "SLACK_CONNECTOR": "Slack (Selected)",
                 "NOTION_CONNECTOR": "Notion (Selected)",
                 "GITHUB_CONNECTOR": "GitHub (Selected)",
+                "ELASTICSEARCH_CONNECTOR": "Elasticsearch (Selected)",
                 "YOUTUBE_VIDEO": "YouTube Videos (Selected)",
                 "DISCORD_CONNECTOR": "Discord (Selected)",
                 "JIRA_CONNECTOR": "Jira Issues (Selected)",
@@ -547,158 +513,8 @@ async def fetch_documents_by_ids(
         return [], []
 
 
-async def write_answer_outline(
-    state: State, config: RunnableConfig, writer: StreamWriter
-) -> dict[str, Any]:
-    """
-    Create a structured answer outline based on the user query.
-
-    This node takes the user query and number of sections from the configuration and uses
-    an LLM to generate a comprehensive outline with logical sections and research questions
-    for each section.
-
-    Returns:
-        Dict containing the answer outline in the "answer_outline" key for state update.
-    """
-    from app.services.llm_service import get_user_strategic_llm
-
-    streaming_service = state.streaming_service
-
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                "🔍 Generating answer outline..."
-            )
-        }
-    )
-    # Get configuration from runnable config
-    configuration = Configuration.from_runnable_config(config)
-    reformulated_query = state.reformulated_query
-    user_query = configuration.user_query
-    num_sections = configuration.num_sections
-    user_id = configuration.user_id
-    search_space_id = configuration.search_space_id
-
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                f'🤔 Planning research approach for: "{user_query[:100]}..."'
-            )
-        }
-    )
-
-    # Get user's strategic LLM
-    llm = await get_user_strategic_llm(state.db_session, user_id, search_space_id)
-    if not llm:
-        error_message = f"No strategic LLM configured for user {user_id} in search space {search_space_id}"
-        writer({"yield_value": streaming_service.format_error(error_message)})
-        raise RuntimeError(error_message)
-
-    # Create the human message content
-    human_message_content = f"""
-    Now Please create an answer outline for the following query:
-
-    User Query: {reformulated_query}
-    Number of Sections: {num_sections}
-
-    Remember to format your response as valid JSON exactly matching this structure:
-    {{
-      "answer_outline": [
-        {{
-          "section_id": 0,
-          "section_title": "Section Title",
-          "questions": [
-            "Question 1 to research for this section",
-            "Question 2 to research for this section"
-          ]
-        }}
-      ]
-    }}
-
-    Your output MUST be valid JSON in exactly this format. Do not include any other text or explanation.
-    """
-
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                "📝 Designing structured outline with AI..."
-            )
-        }
-    )
-
-    # Create messages for the LLM
-    messages = [
-        SystemMessage(content=get_answer_outline_system_prompt()),
-        HumanMessage(content=human_message_content),
-    ]
-
-    # Call the LLM directly without using structured output
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                "⚙️ Processing answer structure..."
-            )
-        }
-    )
-
-    response = await llm.ainvoke(messages)
-
-    # Parse the JSON response manually
-    try:
-        # Extract JSON content from the response
-        content = response.content
-
-        # Find the JSON in the content (handle case where LLM might add additional text)
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            json_str = content[json_start:json_end]
-
-            # Parse the JSON string
-            parsed_data = json.loads(json_str)
-
-            # Convert to Pydantic model
-            answer_outline = AnswerOutline(**parsed_data)
-
-            total_questions = sum(
-                len(section.questions) for section in answer_outline.answer_outline
-            )
-
-            writer(
-                {
-                    "yield_value": streaming_service.format_terminal_info_delta(
-                        f"✅ Successfully generated outline with {len(answer_outline.answer_outline)} sections and {total_questions} research questions!"
-                    )
-                }
-            )
-
-            print(
-                f"Successfully generated answer outline with {len(answer_outline.answer_outline)} sections"
-            )
-
-            # Return state update
-            return {"answer_outline": answer_outline}
-        else:
-            # If JSON structure not found, raise a clear error
-            error_message = (
-                f"Could not find valid JSON in LLM response. Raw response: {content}"
-            )
-            writer({"yield_value": streaming_service.format_error(error_message)})
-            raise ValueError(error_message)
-
-    except (json.JSONDecodeError, ValueError) as e:
-        # Log the error and re-raise it
-        error_message = f"Error parsing LLM response: {e!s}"
-        writer({"yield_value": streaming_service.format_error(error_message)})
-
-        print(f"Error parsing LLM response: {e!s}")
-        print(f"Raw response: {response.content}")
-        raise
-
-
 async def fetch_relevant_documents(
     research_questions: list[str],
-    user_id: str,
     search_space_id: int,
     db_session: AsyncSession,
     connectors_to_search: list[str],
@@ -719,7 +535,6 @@ async def fetch_relevant_documents(
 
     Args:
         research_questions: List of research questions to find documents for
-        user_id: The user ID
         search_space_id: The search space ID
         db_session: The database session
         connectors_to_search: List of connectors to search
@@ -802,7 +617,6 @@ async def fetch_relevant_documents(
                         youtube_chunks,
                     ) = await connector_service.search_youtube(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -829,7 +643,6 @@ async def fetch_relevant_documents(
                         extension_chunks,
                     ) = await connector_service.search_extension(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -856,7 +669,6 @@ async def fetch_relevant_documents(
                         crawled_urls_chunks,
                     ) = await connector_service.search_crawled_urls(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -872,7 +684,7 @@ async def fetch_relevant_documents(
                         writer(
                             {
                                 "yield_value": streaming_service.format_terminal_info_delta(
-                                    f"🌐 Found {len(crawled_urls_chunks)} Web Pages chunks related to your query"
+                                    f"🌐 Found {len(crawled_urls_chunks)} Web Page chunks related to your query"
                                 )
                             }
                         )
@@ -880,7 +692,6 @@ async def fetch_relevant_documents(
                 elif connector == "FILE":
                     source_object, files_chunks = await connector_service.search_files(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -904,7 +715,6 @@ async def fetch_relevant_documents(
                 elif connector == "SLACK_CONNECTOR":
                     source_object, slack_chunks = await connector_service.search_slack(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -931,7 +741,6 @@ async def fetch_relevant_documents(
                         notion_chunks,
                     ) = await connector_service.search_notion(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -958,7 +767,6 @@ async def fetch_relevant_documents(
                         github_chunks,
                     ) = await connector_service.search_github(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -985,7 +793,6 @@ async def fetch_relevant_documents(
                         linear_chunks,
                     ) = await connector_service.search_linear(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -1012,7 +819,6 @@ async def fetch_relevant_documents(
                         tavily_chunks,
                     ) = await connector_service.search_tavily(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                     )
@@ -1032,6 +838,29 @@ async def fetch_relevant_documents(
                             }
                         )
 
+                elif connector == "SEARXNG_API":
+                    (
+                        source_object,
+                        searx_chunks,
+                    ) = await connector_service.search_searxng(
+                        user_query=reformulated_query,
+                        search_space_id=search_space_id,
+                        top_k=top_k,
+                    )
+
+                    if source_object:
+                        all_sources.append(source_object)
+                    all_raw_documents.extend(searx_chunks)
+
+                    if streaming_service and writer:
+                        writer(
+                            {
+                                "yield_value": streaming_service.format_terminal_info_delta(
+                                    f"🌐 Found {len(searx_chunks)} SearxNG results related to your query"
+                                )
+                            }
+                        )
+
                 elif connector == "LINKUP_API":
                     linkup_mode = "standard"
 
@@ -1040,7 +869,6 @@ async def fetch_relevant_documents(
                         linkup_chunks,
                     ) = await connector_service.search_linkup(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         mode=linkup_mode,
                     )
@@ -1060,13 +888,37 @@ async def fetch_relevant_documents(
                             }
                         )
 
+                elif connector == "BAIDU_SEARCH_API":
+                    (
+                        source_object,
+                        baidu_chunks,
+                    ) = await connector_service.search_baidu(
+                        user_query=reformulated_query,
+                        search_space_id=search_space_id,
+                        top_k=top_k,
+                    )
+
+                    # Add to sources and raw documents
+                    if source_object:
+                        all_sources.append(source_object)
+                    all_raw_documents.extend(baidu_chunks)
+
+                    # Stream found document count
+                    if streaming_service and writer:
+                        writer(
+                            {
+                                "yield_value": streaming_service.format_terminal_info_delta(
+                                    f"🇨🇳 Found {len(baidu_chunks)} Baidu Search results related to your query"
+                                )
+                            }
+                        )
+
                 elif connector == "DISCORD_CONNECTOR":
                     (
                         source_object,
                         discord_chunks,
                     ) = await connector_service.search_discord(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -1088,7 +940,6 @@ async def fetch_relevant_documents(
                 elif connector == "JIRA_CONNECTOR":
                     source_object, jira_chunks = await connector_service.search_jira(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -1114,7 +965,6 @@ async def fetch_relevant_documents(
                         calendar_chunks,
                     ) = await connector_service.search_google_calendar(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -1140,7 +990,6 @@ async def fetch_relevant_documents(
                         airtable_chunks,
                     ) = await connector_service.search_airtable(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -1166,7 +1015,6 @@ async def fetch_relevant_documents(
                         gmail_chunks,
                     ) = await connector_service.search_google_gmail(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -1192,7 +1040,6 @@ async def fetch_relevant_documents(
                         confluence_chunks,
                     ) = await connector_service.search_confluence(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -1218,7 +1065,6 @@ async def fetch_relevant_documents(
                         clickup_chunks,
                     ) = await connector_service.search_clickup(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -1245,7 +1091,6 @@ async def fetch_relevant_documents(
                         luma_chunks,
                     ) = await connector_service.search_luma(
                         user_query=reformulated_query,
-                        user_id=user_id,
                         search_space_id=search_space_id,
                         top_k=top_k,
                         search_mode=search_mode,
@@ -1262,6 +1107,32 @@ async def fetch_relevant_documents(
                             {
                                 "yield_value": streaming_service.format_terminal_info_delta(
                                     f"🎯 Found {len(luma_chunks)} Luma events related to your query"
+                                )
+                            }
+                        )
+
+                elif connector == "ELASTICSEARCH_CONNECTOR":
+                    (
+                        source_object,
+                        elasticsearch_chunks,
+                    ) = await connector_service.search_elasticsearch(
+                        user_query=reformulated_query,
+                        search_space_id=search_space_id,
+                        top_k=top_k,
+                        search_mode=search_mode,
+                    )
+
+                    # Add to sources and raw documents
+                    if source_object:
+                        all_sources.append(source_object)
+                    all_raw_documents.extend(elasticsearch_chunks)
+
+                    # Stream found document count
+                    if streaming_service and writer:
+                        writer(
+                            {
+                                "yield_value": streaming_service.format_terminal_info_delta(
+                                    f"🔎 Found {len(elasticsearch_chunks)} Elasticsearch chunks related to your query"
                                 )
                             }
                         )
@@ -1403,439 +1274,6 @@ async def fetch_relevant_documents(
     return deduplicated_docs
 
 
-async def process_sections(
-    state: State, config: RunnableConfig, writer: StreamWriter
-) -> dict[str, Any]:
-    """
-    Process all sections in parallel and combine the results.
-
-    This node takes the answer outline from the previous step, fetches relevant documents
-    for all questions across all sections once, and then processes each section in parallel
-    using the sub_section_writer graph with the shared document pool.
-
-    Returns:
-        Dict containing the final written report in the "final_written_report" key.
-    """
-    # Get configuration and answer outline from state
-    configuration = Configuration.from_runnable_config(config)
-    answer_outline = state.answer_outline
-    streaming_service = state.streaming_service
-
-    # Initialize a dictionary to track content for all sections
-    # This is used to maintain section content while streaming multiple sections
-    section_contents = {}
-
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                "🚀 Starting to process research sections..."
-            )
-        }
-    )
-
-    print(f"Processing sections from outline: {answer_outline is not None}")
-
-    if not answer_outline:
-        error_message = "No answer outline was provided. Cannot generate report."
-        writer({"yield_value": streaming_service.format_error(error_message)})
-        return {
-            "final_written_report": "No answer outline was provided. Cannot generate final report."
-        }
-
-    # Collect all questions from all sections
-    all_questions = []
-    for section in answer_outline.answer_outline:
-        all_questions.extend(section.questions)
-
-    print(f"Collected {len(all_questions)} questions from all sections")
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                f"🧩 Found {len(all_questions)} research questions across {len(answer_outline.answer_outline)} sections"
-            )
-        }
-    )
-
-    # Fetch relevant documents once for all questions
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                "🔍 Searching for relevant information across all connectors..."
-            )
-        }
-    )
-
-    if configuration.num_sections == 1:
-        top_k = 10
-    elif configuration.num_sections == 3:
-        top_k = 20
-    elif configuration.num_sections == 6:
-        top_k = 30
-    else:
-        top_k = 10
-
-    relevant_documents = []
-    user_selected_documents = []
-    user_selected_sources = []
-
-    try:
-        # First, fetch user-selected documents if any
-        if configuration.document_ids_to_add_in_context:
-            writer(
-                {
-                    "yield_value": streaming_service.format_terminal_info_delta(
-                        f"📋 Including {len(configuration.document_ids_to_add_in_context)} user-selected documents..."
-                    )
-                }
-            )
-
-            (
-                user_selected_sources,
-                user_selected_documents,
-            ) = await fetch_documents_by_ids(
-                document_ids=configuration.document_ids_to_add_in_context,
-                user_id=configuration.user_id,
-                db_session=state.db_session,
-            )
-
-            if user_selected_documents:
-                writer(
-                    {
-                        "yield_value": streaming_service.format_terminal_info_delta(
-                            f"✅ Successfully added {len(user_selected_documents)} user-selected documents to context"
-                        )
-                    }
-                )
-
-        # Create connector service using state db_session
-        connector_service = ConnectorService(
-            state.db_session, user_id=configuration.user_id
-        )
-        await connector_service.initialize_counter()
-
-        relevant_documents = await fetch_relevant_documents(
-            research_questions=all_questions,
-            user_id=configuration.user_id,
-            search_space_id=configuration.search_space_id,
-            db_session=state.db_session,
-            connectors_to_search=configuration.connectors_to_search,
-            writer=writer,
-            state=state,
-            top_k=top_k,
-            connector_service=connector_service,
-            search_mode=configuration.search_mode,
-            user_selected_sources=user_selected_sources,
-        )
-    except Exception as e:
-        error_message = f"Error fetching relevant documents: {e!s}"
-        print(error_message)
-        writer({"yield_value": streaming_service.format_error(error_message)})
-        # Log the error and continue with an empty list of documents
-        # This allows the process to continue, but the report might lack information
-        relevant_documents = []
-
-    # Combine user-selected documents with connector-fetched documents
-    all_documents = user_selected_documents + relevant_documents
-
-    print(f"Fetched {len(relevant_documents)} relevant documents for all sections")
-    print(
-        f"Added {len(user_selected_documents)} user-selected documents for all sections"
-    )
-    print(f"Total documents for sections: {len(all_documents)}")
-
-    # Extract and stream sources from all_documents
-    if all_documents:
-        sources_to_stream = extract_sources_from_documents(all_documents)
-        writer(
-            {"yield_value": streaming_service.format_sources_delta(sources_to_stream)}
-        )
-
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                f"✨ Starting to draft {len(answer_outline.answer_outline)} sections using {len(all_documents)} total document chunks ({len(user_selected_documents)} user-selected + {len(relevant_documents)} connector-found)"
-            )
-        }
-    )
-
-    # Create tasks to process each section in parallel with the same document set
-    section_tasks = []
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                "⚙️ Creating processing tasks for each section..."
-            )
-        }
-    )
-
-    for i, section in enumerate(answer_outline.answer_outline):
-        if i == 0:
-            sub_section_type = SubSectionType.START
-        elif i == len(answer_outline.answer_outline) - 1:
-            sub_section_type = SubSectionType.END
-        else:
-            sub_section_type = SubSectionType.MIDDLE
-
-        # Initialize the section_contents entry for this section
-        section_contents[i] = {
-            "title": section.section_title,
-            "content": "",
-            "index": i,
-        }
-
-        section_tasks.append(
-            process_section_with_documents(
-                section_id=i,
-                section_title=section.section_title,
-                section_questions=section.questions,
-                user_query=configuration.user_query,
-                user_id=configuration.user_id,
-                search_space_id=configuration.search_space_id,
-                relevant_documents=all_documents,  # Use combined documents
-                state=state,
-                writer=writer,
-                sub_section_type=sub_section_type,
-                section_contents=section_contents,
-            )
-        )
-
-    # Run all section processing tasks in parallel
-    print(f"Running {len(section_tasks)} section processing tasks in parallel")
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                f"⏳ Processing {len(section_tasks)} sections simultaneously..."
-            )
-        }
-    )
-
-    section_results = await asyncio.gather(*section_tasks, return_exceptions=True)
-
-    # Handle any exceptions in the results
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                "🧵 Combining section results into final report..."
-            )
-        }
-    )
-
-    processed_results = []
-    for i, result in enumerate(section_results):
-        if isinstance(result, Exception):
-            section_title = answer_outline.answer_outline[i].section_title
-            error_message = f"Error processing section '{section_title}': {result!s}"
-            print(error_message)
-            writer({"yield_value": streaming_service.format_error(error_message)})
-            processed_results.append(error_message)
-        else:
-            processed_results.append(result)
-
-    # Combine the results into a final report with section titles
-    final_report = []
-    for _i, (section, content) in enumerate(
-        zip(answer_outline.answer_outline, processed_results, strict=False)
-    ):
-        # Skip adding the section header since the content already contains the title
-        final_report.append(content)
-        final_report.append("\n")
-
-        # Stream each section with its title
-        writer(
-            {
-                "yield_value": state.streaming_service.format_text_chunk(
-                    f"# {section.section_title}\n\n{content}"
-                )
-            }
-        )
-
-    # Join all sections with newlines
-    final_written_report = "\n".join(final_report)
-    print(f"Generated final report with {len(final_report)} parts")
-
-    writer(
-        {
-            "yield_value": streaming_service.format_terminal_info_delta(
-                "🎉 Final research report generated successfully!"
-            )
-        }
-    )
-
-    # Use the shared documents for further question generation
-    # Since all sections used the same document pool, we can use it directly
-    return {
-        "final_written_report": final_written_report,
-        "reranked_documents": all_documents,
-    }
-
-
-async def process_section_with_documents(
-    section_id: int,
-    section_title: str,
-    section_questions: list[str],
-    user_id: str,
-    search_space_id: int,
-    relevant_documents: list[dict[str, Any]],
-    user_query: str,
-    state: State = None,
-    writer: StreamWriter = None,
-    sub_section_type: SubSectionType = SubSectionType.MIDDLE,
-    section_contents: dict[int, dict[str, Any]] | None = None,
-) -> str:
-    """
-    Process a single section using pre-fetched documents.
-
-    Args:
-        section_id: The ID of the section
-        section_title: The title of the section
-        section_questions: List of research questions for this section
-        user_id: The user ID
-        search_space_id: The search space ID
-        relevant_documents: Pre-fetched documents to use for this section
-        state: The current state
-        writer: StreamWriter for sending progress updates
-        sub_section_type: The type of section (start, middle, end)
-        section_contents: Dictionary to track content across multiple sections
-
-    Returns:
-        The written section content
-    """
-    try:
-        # Use the provided documents
-        documents_to_use = relevant_documents
-
-        # Send status update via streaming if available
-        if state and state.streaming_service and writer:
-            writer(
-                {
-                    "yield_value": state.streaming_service.format_terminal_info_delta(
-                        f'📝 Writing section: "{section_title}" with {len(section_questions)} research questions'
-                    )
-                }
-            )
-
-        # Fallback if no documents found
-        if not documents_to_use:
-            print(f"No relevant documents found for section: {section_title}")
-            if state and state.streaming_service and writer:
-                writer(
-                    {
-                        "yield_value": state.streaming_service.format_terminal_info_delta(
-                            f'📝 Writing section "{section_title}" using general knowledge (no specific sources found)'
-                        )
-                    }
-                )
-
-            documents_to_use = [
-                {"content": f"No specific information was found for: {question}"}
-                for question in section_questions
-            ]
-
-        # Call the sub_section_writer graph with the appropriate config
-        config = {
-            "configurable": {
-                "sub_section_title": section_title,
-                "sub_section_questions": section_questions,
-                "sub_section_type": sub_section_type,
-                "user_query": user_query,
-                "relevant_documents": documents_to_use,
-                "user_id": user_id,
-                "search_space_id": search_space_id,
-            }
-        }
-
-        # Create the initial state with db_session and chat_history
-        sub_state = {"db_session": state.db_session, "chat_history": state.chat_history}
-
-        # Invoke the sub-section writer graph with streaming
-        print(f"Invoking sub_section_writer for: {section_title}")
-        if state and state.streaming_service and writer:
-            writer(
-                {
-                    "yield_value": state.streaming_service.format_terminal_info_delta(
-                        f'🧠 Analyzing information and drafting content for section: "{section_title}"'
-                    )
-                }
-            )
-
-        # Variables to track streaming state
-        complete_content = ""  # Tracks the complete content received so far
-
-        async for _chunk_type, chunk in sub_section_writer_graph.astream(
-            sub_state, config, stream_mode=["values"]
-        ):
-            if "final_answer" in chunk:
-                new_content = chunk["final_answer"]
-                if new_content and new_content != complete_content:
-                    # Extract only the new content (delta)
-                    delta = new_content[len(complete_content) :]
-
-                    # Update what we've processed so far
-                    complete_content = new_content
-
-                    # Only stream if there's actual new content
-                    if delta and state and state.streaming_service and writer:
-                        # Update terminal with real-time progress indicator
-                        writer(
-                            {
-                                "yield_value": state.streaming_service.format_terminal_info_delta(
-                                    f"✍️ Writing section {section_id + 1}... ({len(complete_content.split())} words)"
-                                )
-                            }
-                        )
-
-                        # Update section_contents with just the new delta
-                        section_contents[section_id]["content"] += delta
-
-                        # Build UI-friendly content for all sections
-                        complete_answer = []
-                        for i in range(len(section_contents)):
-                            if i in section_contents and section_contents[i]["content"]:
-                                # Add section header
-                                complete_answer.append(
-                                    f"# {section_contents[i]['title']}"
-                                )
-                                complete_answer.append("")  # Empty line after title
-
-                                # Add section content
-                                content_lines = section_contents[i]["content"].split(
-                                    "\n"
-                                )
-                                complete_answer.extend(content_lines)
-                                complete_answer.append("")  # Empty line after content
-
-        # Set default if no content was received
-        if not complete_content:
-            complete_content = "No content was generated for this section."
-            section_contents[section_id]["content"] = complete_content
-
-        # Final terminal update
-        if state and state.streaming_service and writer:
-            writer(
-                {
-                    "yield_value": state.streaming_service.format_terminal_info_delta(
-                        f'✅ Completed section: "{section_title}"'
-                    )
-                }
-            )
-
-        return complete_content
-    except Exception as e:
-        print(f"Error processing section '{section_title}': {e!s}")
-
-        # Send error update via streaming if available
-        if state and state.streaming_service and writer:
-            writer(
-                {
-                    "yield_value": state.streaming_service.format_error(
-                        f'Error processing section "{section_title}": {e!s}'
-                    )
-                }
-            )
-
-        return f"Error processing section: {section_title}. Details: {e!s}"
-
-
 async def reformulate_user_query(
     state: State, config: RunnableConfig, writer: StreamWriter
 ) -> dict[str, Any]:
@@ -1854,7 +1292,6 @@ async def reformulate_user_query(
         reformulated_query = await QueryService.reformulate_query_with_chat_history(
             user_query=user_query,
             session=state.db_session,
-            user_id=configuration.user_id,
             search_space_id=configuration.search_space_id,
             chat_history_str=chat_history_str,
         )
@@ -1905,8 +1342,8 @@ async def handle_qna_workflow(
         }
     )
 
-    # Use a reasonable top_k for QNA - not too many documents to avoid overwhelming the LLM
-    top_k = 5 if configuration.search_mode == SearchMode.DOCUMENTS else 20
+    # Use the top_k value from configuration
+    top_k = configuration.top_k
 
     relevant_documents = []
     user_selected_documents = []
@@ -1928,7 +1365,7 @@ async def handle_qna_workflow(
                 user_selected_documents,
             ) = await fetch_documents_by_ids(
                 document_ids=configuration.document_ids_to_add_in_context,
-                user_id=configuration.user_id,
+                search_space_id=configuration.search_space_id,
                 db_session=state.db_session,
             )
 
@@ -1943,7 +1380,7 @@ async def handle_qna_workflow(
 
         # Create connector service using state db_session
         connector_service = ConnectorService(
-            state.db_session, user_id=configuration.user_id
+            state.db_session, search_space_id=configuration.search_space_id
         )
         await connector_service.initialize_counter()
 
@@ -1952,7 +1389,6 @@ async def handle_qna_workflow(
 
         relevant_documents = await fetch_relevant_documents(
             research_questions=research_questions,
-            user_id=configuration.user_id,
             search_space_id=configuration.search_space_id,
             db_session=state.db_session,
             connectors_to_search=configuration.connectors_to_search,
@@ -1998,8 +1434,8 @@ async def handle_qna_workflow(
             "user_query": user_query,  # Use the reformulated query
             "reformulated_query": reformulated_query,
             "relevant_documents": all_documents,  # Use combined documents
-            "user_id": configuration.user_id,
             "search_space_id": configuration.search_space_id,
+            "language": configuration.language,
         }
     }
 
@@ -2010,7 +1446,7 @@ async def handle_qna_workflow(
         writer(
             {
                 "yield_value": streaming_service.format_terminal_info_delta(
-                    "✍️ Writing comprehensive answer with citations..."
+                    "✍️ Writing comprehensive answer ..."
                 )
             }
         )
@@ -2082,19 +1518,18 @@ async def generate_further_questions(
     """
     Generate contextually relevant follow-up questions based on chat history and available documents.
 
-    This node takes the chat history and reranked documents from sub-agents (qna_agent or sub_section_writer)
+    This node takes the chat history and reranked documents from the QNA agent
     and uses an LLM to generate follow-up questions that would naturally extend the conversation
     and provide additional value to the user.
 
     Returns:
         Dict containing the further questions in the "further_questions" key for state update.
     """
-    from app.services.llm_service import get_user_fast_llm
+    from app.services.llm_service import get_fast_llm
 
     # Get configuration and state data
     configuration = Configuration.from_runnable_config(config)
     chat_history = state.chat_history
-    user_id = configuration.user_id
     search_space_id = configuration.search_space_id
     streaming_service = state.streaming_service
 
@@ -2109,10 +1544,10 @@ async def generate_further_questions(
         }
     )
 
-    # Get user's fast LLM
-    llm = await get_user_fast_llm(state.db_session, user_id, search_space_id)
+    # Get search space's fast LLM
+    llm = await get_fast_llm(state.db_session, search_space_id)
     if not llm:
-        error_message = f"No fast LLM configured for user {user_id} in search space {search_space_id}"
+        error_message = f"No fast LLM configured for search space {search_space_id}"
         print(error_message)
         writer({"yield_value": streaming_service.format_error(error_message)})
 

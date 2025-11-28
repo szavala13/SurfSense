@@ -1,10 +1,68 @@
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
+import yaml
 from chonkie import AutoEmbeddings, CodeChunker, RecursiveChunker
+from chonkie.embeddings.azure_openai import AzureOpenAIEmbeddings
+from chonkie.embeddings.registry import EmbeddingsRegistry
 from dotenv import load_dotenv
 from rerankers import Reranker
+
+
+# Monkey patch AzureOpenAIEmbeddings to fix parameter order issue
+# This is a temporary workaround until the upstream chonkie library is fixed
+class FixedAzureOpenAIEmbeddings(AzureOpenAIEmbeddings):
+    """Wrapper around AzureOpenAIEmbeddings with fixed parameter order."""
+
+    def __init__(
+        self,
+        model: str = "text-embedding-3-small",
+        azure_endpoint: str | None = None,
+        tokenizer: Any | None = None,
+        dimension: int | None = None,
+        azure_api_key: str | None = None,
+        api_version: str = "2024-10-21",
+        deployment: str | None = None,
+        max_retries: int = 3,
+        timeout: float = 60.0,
+        batch_size: int = 128,
+        **kwargs: dict[str, Any],
+    ):
+        """Initialize with model as first parameter to avoid conflicts."""
+        # Call parent's __init__ by explicitly passing azure_endpoint as first arg
+        # to maintain compatibility with the original signature
+        super().__init__(
+            azure_endpoint=azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT", ""),
+            model=model,
+            tokenizer=tokenizer,
+            dimension=dimension,
+            azure_api_key=azure_api_key,
+            api_version=api_version,
+            deployment=deployment,
+            max_retries=max_retries,
+            timeout=timeout,
+            batch_size=batch_size,
+            **kwargs,
+        )
+
+
+# TODO: Fix this in chonkie upstream
+# Register our fixed Azure OpenAI embeddings with pattern
+# This automatically infers the following arguments from their corresponding environment variables if they are not provided:
+# - `api_key` from `AZURE_OPENAI_API_KEY`
+# - `organization` from `OPENAI_ORG_ID`
+# - `project` from `OPENAI_PROJECT_ID`
+# - `azure_ad_token` from `AZURE_OPENAI_AD_TOKEN`
+# - `api_version` from `OPENAI_API_VERSION`
+# - `azure_endpoint` from `AZURE_OPENAI_ENDPOINT`
+EmbeddingsRegistry.register_provider("azure_openai", FixedAzureOpenAIEmbeddings)
+EmbeddingsRegistry.register_pattern(r"^text-embedding-", FixedAzureOpenAIEmbeddings)
+EmbeddingsRegistry.register_model("text-embedding-ada-002", FixedAzureOpenAIEmbeddings)
+EmbeddingsRegistry.register_model("text-embedding-3-small", FixedAzureOpenAIEmbeddings)
+EmbeddingsRegistry.register_model("text-embedding-3-large", FixedAzureOpenAIEmbeddings)
+
 
 # Get the base directory of the project
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -21,6 +79,36 @@ def is_ffmpeg_installed():
         bool: True if ffmpeg is installed, False otherwise.
     """
     return shutil.which("ffmpeg") is not None
+
+
+def load_global_llm_configs():
+    """
+    Load global LLM configurations from YAML file.
+    Falls back to example file if main file doesn't exist.
+
+    Returns:
+        list: List of global LLM config dictionaries, or empty list if file doesn't exist
+    """
+    # Try main config file first
+    global_config_file = BASE_DIR / "app" / "config" / "global_llm_config.yaml"
+
+    # Fall back to example file for testing
+    # if not global_config_file.exists():
+    #     global_config_file = BASE_DIR / "app" / "config" / "global_llm_config.example.yaml"
+    #     if global_config_file.exists():
+    #         print("Info: Using global_llm_config.example.yaml (copy to global_llm_config.yaml for production)")
+
+    if not global_config_file.exists():
+        # No global configs available
+        return []
+
+    try:
+        with open(global_config_file, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+            return data.get("global_llm_configs", [])
+    except Exception as e:
+        print(f"Warning: Failed to load global LLM configs: {e}")
+        return []
 
 
 class Config:
@@ -40,9 +128,12 @@ class Config:
     DATABASE_URL = os.getenv("DATABASE_URL")
 
     NEXT_FRONTEND_URL = os.getenv("NEXT_FRONTEND_URL")
+    # Backend URL to override the http to https in the OAuth redirect URI
+    BACKEND_URL = os.getenv("BACKEND_URL")
 
     # Auth
     AUTH_TYPE = os.getenv("AUTH_TYPE")
+    REGISTRATION_ENABLED = os.getenv("REGISTRATION_ENABLED", "TRUE").upper() == "TRUE"
 
     # Google OAuth
     GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
@@ -62,9 +153,28 @@ class Config:
     # LLM instances are now managed per-user through the LLMConfig system
     # Legacy environment variables removed in favor of user-specific configurations
 
+    # Global LLM Configurations (optional)
+    # Load from global_llm_config.yaml if available
+    # These can be used as default options for users
+    GLOBAL_LLM_CONFIGS = load_global_llm_configs()
+
     # Chonkie Configuration | Edit this to your needs
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
-    embedding_model_instance = AutoEmbeddings.get_embeddings(EMBEDDING_MODEL)
+    # Azure OpenAI credentials from environment variables
+    AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+    AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+
+    # Pass Azure credentials to embeddings when using Azure OpenAI
+    embedding_kwargs = {}
+    if AZURE_OPENAI_ENDPOINT:
+        embedding_kwargs["azure_endpoint"] = AZURE_OPENAI_ENDPOINT
+    if AZURE_OPENAI_API_KEY:
+        embedding_kwargs["azure_api_key"] = AZURE_OPENAI_API_KEY
+
+    embedding_model_instance = AutoEmbeddings.get_embeddings(
+        EMBEDDING_MODEL,
+        **embedding_kwargs,
+    )
     chunker_instance = RecursiveChunker(
         chunk_size=getattr(embedding_model_instance, "max_seq_length", 512)
     )
@@ -73,12 +183,16 @@ class Config:
     )
 
     # Reranker's Configuration | Pinecode, Cohere etc. Read more at https://github.com/AnswerDotAI/rerankers?tab=readme-ov-file#usage
-    RERANKERS_MODEL_NAME = os.getenv("RERANKERS_MODEL_NAME")
-    RERANKERS_MODEL_TYPE = os.getenv("RERANKERS_MODEL_TYPE")
-    reranker_instance = Reranker(
-        model_name=RERANKERS_MODEL_NAME,
-        model_type=RERANKERS_MODEL_TYPE,
-    )
+    RERANKERS_ENABLED = os.getenv("RERANKERS_ENABLED", "FALSE").upper() == "TRUE"
+    if RERANKERS_ENABLED:
+        RERANKERS_MODEL_NAME = os.getenv("RERANKERS_MODEL_NAME")
+        RERANKERS_MODEL_TYPE = os.getenv("RERANKERS_MODEL_TYPE")
+        reranker_instance = Reranker(
+            model_name=RERANKERS_MODEL_NAME,
+            model_type=RERANKERS_MODEL_TYPE,
+        )
+    else:
+        reranker_instance = None
 
     # OAuth JWT
     SECRET_KEY = os.getenv("SECRET_KEY")
@@ -94,15 +208,12 @@ class Config:
         # LlamaCloud API Key
         LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY")
 
-    # Firecrawl API Key
-    FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", None)
-
     # Litellm TTS Configuration
     TTS_SERVICE = os.getenv("TTS_SERVICE")
     TTS_SERVICE_API_BASE = os.getenv("TTS_SERVICE_API_BASE")
     TTS_SERVICE_API_KEY = os.getenv("TTS_SERVICE_API_KEY")
 
-    # Litellm STT Configuration
+    # STT Configuration
     STT_SERVICE = os.getenv("STT_SERVICE")
     STT_SERVICE_API_BASE = os.getenv("STT_SERVICE_API_BASE")
     STT_SERVICE_API_KEY = os.getenv("STT_SERVICE_API_KEY")

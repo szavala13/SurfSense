@@ -1,7 +1,9 @@
 "use client";
 
-import { ChevronDown, ChevronUp, FileX } from "lucide-react";
+import { ChevronDown, ChevronUp, FileX, Plus } from "lucide-react";
 import { motion } from "motion/react";
+import { useParams, useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import React from "react";
 import { DocumentViewer } from "@/components/document-viewer";
 import { Button } from "@/components/ui/button";
@@ -66,6 +68,11 @@ export function DocumentsTableShell({
 	sortDesc: boolean;
 	onSortChange: (key: SortKey) => void;
 }) {
+	const t = useTranslations("documents");
+	const router = useRouter();
+	const params = useParams();
+	const searchSpaceId = params.search_space_id;
+
 	const sorted = React.useMemo(
 		() => sortDocuments(documents, sortKey, sortDesc),
 		[documents, sortKey, sortDesc]
@@ -101,24 +108,43 @@ export function DocumentsTableShell({
 				<div className="flex h-[400px] w-full items-center justify-center">
 					<div className="flex flex-col items-center gap-2">
 						<div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary"></div>
-						<p className="text-sm text-muted-foreground">Loading documents...</p>
+						<p className="text-sm text-muted-foreground">{t("loading")}</p>
 					</div>
 				</div>
 			) : error ? (
 				<div className="flex h-[400px] w-full items-center justify-center">
 					<div className="flex flex-col items-center gap-2">
-						<p className="text-sm text-destructive">Error loading documents</p>
+						<p className="text-sm text-destructive">{t("error_loading")}</p>
 						<Button variant="outline" size="sm" onClick={() => onRefresh()} className="mt-2">
-							Retry
+							{t("retry")}
 						</Button>
 					</div>
 				</div>
 			) : sorted.length === 0 ? (
 				<div className="flex h-[400px] w-full items-center justify-center">
-					<div className="flex flex-col items-center gap-2">
-						<FileX className="h-8 w-8 text-muted-foreground" />
-						<p className="text-sm text-muted-foreground">No documents found</p>
-					</div>
+					<motion.div
+						initial={{ opacity: 0, y: 20 }}
+						animate={{ opacity: 1, y: 0 }}
+						transition={{ duration: 0.4 }}
+						className="flex flex-col items-center gap-4 max-w-md px-4 text-center"
+					>
+						<div className="rounded-full bg-muted p-4">
+							<FileX className="h-8 w-8 text-muted-foreground" />
+						</div>
+						<div className="space-y-2">
+							<h3 className="text-lg font-semibold">{t("no_documents")}</h3>
+							<p className="text-sm text-muted-foreground">
+								Get started by adding your first data source.
+							</p>
+						</div>
+						<Button
+							onClick={() => router.push(`/dashboard/${searchSpaceId}/sources/add`)}
+							className="mt-2"
+						>
+							<Plus className="mr-2 h-4 w-4" />
+							Add Sources
+						</Button>
+					</motion.div>
 				</div>
 			) : (
 				<>
@@ -140,7 +166,7 @@ export function DocumentsTableShell({
 												className="flex h-full w-full cursor-pointer select-none items-center justify-between gap-2"
 												onClick={() => onSortHeader("title")}
 											>
-												Title
+												{t("title")}
 												{sortKey === "title" ? (
 													sortDesc ? (
 														<ChevronDown className="shrink-0 opacity-60" size={16} />
@@ -158,7 +184,7 @@ export function DocumentsTableShell({
 												className="flex h-full w-full cursor-pointer select-none items-center justify-between gap-2"
 												onClick={() => onSortHeader("document_type")}
 											>
-												Type
+												{t("type")}
 												{sortKey === "document_type" ? (
 													sortDesc ? (
 														<ChevronDown className="shrink-0 opacity-60" size={16} />
@@ -170,7 +196,7 @@ export function DocumentsTableShell({
 										</TableHead>
 									)}
 									{columnVisibility.content && (
-										<TableHead style={{ width: 300 }}>Content Summary</TableHead>
+										<TableHead style={{ width: 300 }}>{t("content_summary")}</TableHead>
 									)}
 									{columnVisibility.created_at && (
 										<TableHead style={{ width: 120 }}>
@@ -264,7 +290,7 @@ export function DocumentsTableShell({
 															content={doc.content}
 															trigger={
 																<Button variant="ghost" size="sm" className="w-fit text-xs">
-																	View Full Content
+																	{t("view_full")}
 																</Button>
 															}
 														/>
@@ -335,7 +361,7 @@ export function DocumentsTableShell({
 																	size="sm"
 																	className="w-fit text-xs p-0 h-auto"
 																>
-																	View Full Content
+																	{t("view_full")}
 																</Button>
 															}
 														/>

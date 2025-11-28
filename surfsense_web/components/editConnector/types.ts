@@ -30,6 +30,13 @@ export const editConnectorSchema = z.object({
 	NOTION_INTEGRATION_TOKEN: z.string().optional(),
 	SERPER_API_KEY: z.string().optional(),
 	TAVILY_API_KEY: z.string().optional(),
+	SEARXNG_HOST: z.string().optional(),
+	SEARXNG_API_KEY: z.string().optional(),
+	SEARXNG_ENGINES: z.string().optional(),
+	SEARXNG_CATEGORIES: z.string().optional(),
+	SEARXNG_LANGUAGE: z.string().optional(),
+	SEARXNG_SAFESEARCH: z.string().optional(),
+	SEARXNG_VERIFY_SSL: z.string().optional(),
 	LINEAR_API_KEY: z.string().optional(),
 	LINKUP_API_KEY: z.string().optional(),
 	DISCORD_BOT_TOKEN: z.string().optional(),
@@ -44,5 +51,8 @@ export const editConnectorSchema = z.object({
 	GOOGLE_CALENDAR_REFRESH_TOKEN: z.string().optional(),
 	GOOGLE_CALENDAR_CALENDAR_IDS: z.string().optional(),
 	LUMA_API_KEY: z.string().optional(),
+	ELASTICSEARCH_API_KEY: z.string().optional(),
+	FIRECRAWL_API_KEY: z.string().optional(),
+	INITIAL_URLS: z.string().optional(),
 });
 export type EditConnectorFormValues = z.infer<typeof editConnectorSchema>;

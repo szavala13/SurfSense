@@ -2,6 +2,7 @@
 
 import { motion } from "motion/react";
 import { useParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -22,6 +23,7 @@ function useDebounced<T>(value: T, delay = 250) {
 }
 
 export default function DocumentsTable() {
+	const t = useTranslations("documents");
 	const id = useId();
 	const params = useParams();
 	const searchSpaceId = Number(params.search_space_id);
@@ -36,44 +38,63 @@ export default function DocumentsTable() {
 		created_at: true,
 	});
 	const [pageIndex, setPageIndex] = useState(0);
-	const [pageSize, setPageSize] = useState(10);
+	const [pageSize, setPageSize] = useState(50);
 	const [sortKey, setSortKey] = useState<SortKey>("title");
 	const [sortDesc, setSortDesc] = useState(false);
 	const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+	const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
 
-	// Use server-side pagination and search
-	const { documents, total, loading, error, fetchDocuments, searchDocuments, deleteDocument } =
-		useDocuments(searchSpaceId, {
-			page: pageIndex,
-			pageSize: pageSize,
-		});
+	// Use server-side pagination, search, and filtering
+	const {
+		documents,
+		total,
+		loading,
+		error,
+		fetchDocuments,
+		searchDocuments,
+		deleteDocument,
+		getDocumentTypeCounts,
+	} = useDocuments(searchSpaceId, {
+		page: pageIndex,
+		pageSize: pageSize,
+	});
+
+	// Fetch document type counts on mount and when search space changes
+	useEffect(() => {
+		if (searchSpaceId && getDocumentTypeCounts) {
+			getDocumentTypeCounts().then(setTypeCounts);
+		}
+	}, [searchSpaceId, getDocumentTypeCounts]);
 
 	// Refetch when pagination changes or when search/filters change
 	useEffect(() => {
 		if (searchSpaceId) {
 			if (debouncedSearch.trim()) {
 				// Use search endpoint if there's a search query
-				searchDocuments?.(debouncedSearch, pageIndex, pageSize);
+				searchDocuments?.(
+					debouncedSearch,
+					pageIndex,
+					pageSize,
+					activeTypes.length > 0 ? activeTypes : undefined
+				);
 			} else {
 				// Use regular fetch if no search
-				fetchDocuments?.(pageIndex, pageSize);
+				fetchDocuments?.(pageIndex, pageSize, activeTypes.length > 0 ? activeTypes : undefined);
 			}
 		}
-	}, [pageIndex, pageSize, debouncedSearch, searchSpaceId, fetchDocuments, searchDocuments]);
+	}, [
+		pageIndex,
+		pageSize,
+		debouncedSearch,
+		activeTypes,
+		searchSpaceId,
+		fetchDocuments,
+		searchDocuments,
+	]);
 
-	// Client-side filtering for document types only
-	// Note: This could also be moved to the backend for better performance
-	const filtered = useMemo(() => {
-		let result = documents || [];
-		if (activeTypes.length > 0) {
-			result = result.filter((d) => activeTypes.includes(d.document_type));
-		}
-		return result;
-	}, [documents, activeTypes]);
-
-	// Display filtered results
-	const displayDocs = filtered;
-	const displayTotal = activeTypes.length > 0 ? filtered.length : total;
+	// Display server-filtered results directly
+	const displayDocs = documents || [];
+	const displayTotal = total;
 	const pageStart = pageIndex * pageSize;
 	const pageEnd = Math.min(pageStart + pageSize, displayTotal);
 
@@ -88,29 +109,34 @@ export default function DocumentsTable() {
 
 	const refreshCurrentView = useCallback(async () => {
 		if (debouncedSearch.trim()) {
-			await searchDocuments?.(debouncedSearch, pageIndex, pageSize);
+			await searchDocuments?.(
+				debouncedSearch,
+				pageIndex,
+				pageSize,
+				activeTypes.length > 0 ? activeTypes : undefined
+			);
 		} else {
-			await fetchDocuments?.(pageIndex, pageSize);
+			await fetchDocuments?.(pageIndex, pageSize, activeTypes.length > 0 ? activeTypes : undefined);
 		}
-	}, [debouncedSearch, pageIndex, pageSize, searchDocuments, fetchDocuments]);
+	}, [debouncedSearch, pageIndex, pageSize, activeTypes, searchDocuments, fetchDocuments]);
 
 	const onBulkDelete = async () => {
 		if (selectedIds.size === 0) {
-			toast.error("No rows selected");
+			toast.error(t("no_rows_selected"));
 			return;
 		}
 		try {
 			const results = await Promise.all(Array.from(selectedIds).map((id) => deleteDocument?.(id)));
 			const okCount = results.filter((r) => r === true).length;
 			if (okCount === selectedIds.size)
-				toast.success(`Successfully deleted ${okCount} document(s)`);
-			else toast.error("Some documents could not be deleted");
+				toast.success(t("delete_success_count", { count: okCount }));
+			else toast.error(t("delete_partial_failed"));
 			// Refetch the current page with appropriate method
 			await refreshCurrentView();
 			setSelectedIds(new Set());
 		} catch (e) {
 			console.error(e);
-			toast.error("Error deleting documents");
+			toast.error(t("delete_error"));
 		}
 	};
 
@@ -133,8 +159,7 @@ export default function DocumentsTable() {
 			className="w-full px-6 py-4"
 		>
 			<DocumentsFilters
-				allDocuments={documents || []}
-				visibleDocuments={displayDocs}
+				typeCounts={typeCounts}
 				selectedIds={selectedIds}
 				onSearch={setSearch}
 				searchValue={search}

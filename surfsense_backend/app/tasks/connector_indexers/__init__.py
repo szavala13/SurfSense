@@ -17,6 +17,8 @@ Available indexers:
 - Google Gmail: Index messages from Google Gmail
 - Google Calendar: Index events from Google Calendar
 - Luma: Index events from Luma
+- Webcrawler: Index crawled URLs
+- Elasticsearch: Index documents from Elasticsearch instances
 """
 
 # Communication platforms
@@ -27,6 +29,7 @@ from .confluence_indexer import index_confluence_pages
 from .discord_indexer import index_discord_messages
 
 # Development platforms
+from .elasticsearch_indexer import index_elasticsearch_documents
 from .github_indexer import index_github_repos
 from .google_calendar_indexer import index_google_calendar_events
 from .google_gmail_indexer import index_google_gmail_messages
@@ -39,6 +42,7 @@ from .luma_indexer import index_luma_events
 # Documentation and knowledge management
 from .notion_indexer import index_notion_pages
 from .slack_indexer import index_slack_messages
+from .webcrawler_indexer import index_crawled_urls
 
 __all__ = [  # noqa: RUF022
     "index_airtable_records",
@@ -46,6 +50,7 @@ __all__ = [  # noqa: RUF022
     "index_confluence_pages",
     "index_discord_messages",
     # Development platforms
+    "index_elasticsearch_documents",
     "index_github_repos",
     # Calendar and scheduling
     "index_google_calendar_events",
@@ -55,6 +60,7 @@ __all__ = [  # noqa: RUF022
     "index_linear_issues",
     # Documentation and knowledge management
     "index_notion_pages",
+    "index_crawled_urls",
     # Communication platforms
     "index_slack_messages",
     "index_google_gmail_messages",

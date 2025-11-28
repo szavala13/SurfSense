@@ -1,7 +1,7 @@
 "use client";
 
 import { type ChatHandler, ChatSection as LlamaIndexChatSection } from "@llamaindex/chat-ui";
-import type { ResearchMode } from "@/components/chat";
+import { useParams } from "next/navigation";
 import { ChatInputUI } from "@/components/chat/ChatInputGroup";
 import { ChatMessagesUI } from "@/components/chat/ChatMessages";
 import type { Document } from "@/hooks/use-documents";
@@ -14,8 +14,8 @@ interface ChatInterfaceProps {
 	selectedConnectors?: string[];
 	searchMode?: "DOCUMENTS" | "CHUNKS";
 	onSearchModeChange?: (mode: "DOCUMENTS" | "CHUNKS") => void;
-	researchMode?: ResearchMode;
-	onResearchModeChange?: (mode: ResearchMode) => void;
+	topK?: number;
+	onTopKChange?: (topK: number) => void;
 }
 
 export default function ChatInterface({
@@ -26,14 +26,16 @@ export default function ChatInterface({
 	selectedConnectors = [],
 	searchMode,
 	onSearchModeChange,
-	researchMode,
-	onResearchModeChange,
+	topK = 10,
+	onTopKChange,
 }: ChatInterfaceProps) {
+	const { chat_id, search_space_id } = useParams();
+
 	return (
-		<LlamaIndexChatSection handler={handler} className="flex h-full">
-			<div className="flex flex-1 flex-col">
+		<LlamaIndexChatSection handler={handler} className="flex h-full max-w-7xl mx-auto">
+			<div className="flex grow-1 flex-col">
 				<ChatMessagesUI />
-				<div className="border-t p-4">
+				<div className="border-1 rounded-4xl p-2">
 					<ChatInputUI
 						onDocumentSelectionChange={onDocumentSelectionChange}
 						selectedDocuments={selectedDocuments}
@@ -41,8 +43,8 @@ export default function ChatInterface({
 						selectedConnectors={selectedConnectors}
 						searchMode={searchMode}
 						onSearchModeChange={onSearchModeChange}
-						researchMode={researchMode}
-						onResearchModeChange={onResearchModeChange}
+						topK={topK}
+						onTopKChange={onTopKChange}
 					/>
 				</div>
 			</div>

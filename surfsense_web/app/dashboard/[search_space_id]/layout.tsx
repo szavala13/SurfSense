@@ -28,49 +28,23 @@ export default function DashboardLayout({
 
 	const customNavMain = [
 		{
-			title: "Researcher",
+			title: "Chat",
 			url: `/dashboard/${search_space_id}/researcher`,
 			icon: "SquareTerminal",
 			items: [],
 		},
 		{
-			title: "Manage LLMs",
-			url: `/dashboard/${search_space_id}/settings`,
-			icon: "Settings2",
-			items: [],
-		},
-
-		{
-			title: "Documents",
+			title: "Sources",
 			url: "#",
-			icon: "FileStack",
+			icon: "Database",
 			items: [
 				{
-					title: "Upload Documents",
-					url: `/dashboard/${search_space_id}/documents/upload`,
-				},
-				// { TODO: FIX THIS AND ADD IT BACK
-				//   title: "Add Webpages",
-				//   url: `/dashboard/${search_space_id}/documents/webpage`,
-				// },
-				{
-					title: "Add Youtube Videos",
-					url: `/dashboard/${search_space_id}/documents/youtube`,
+					title: "Add Sources",
+					url: `/dashboard/${search_space_id}/sources/add`,
 				},
 				{
 					title: "Manage Documents",
 					url: `/dashboard/${search_space_id}/documents`,
-				},
-			],
-		},
-		{
-			title: "Connectors",
-			url: `#`,
-			icon: "Cable",
-			items: [
-				{
-					title: "Add Connector",
-					url: `/dashboard/${search_space_id}/connectors/add`,
 				},
 				{
 					title: "Manage Connectors",
@@ -79,9 +53,15 @@ export default function DashboardLayout({
 			],
 		},
 		{
-			title: "Podcasts",
-			url: `/dashboard/${search_space_id}/podcasts`,
-			icon: "Podcast",
+			title: "Team",
+			url: `/dashboard/${search_space_id}/team`,
+			icon: "Users",
+			items: [],
+		},
+		{
+			title: "Settings",
+			url: `/dashboard/${search_space_id}/settings`,
+			icon: "Settings2",
 			items: [],
 		},
 		{

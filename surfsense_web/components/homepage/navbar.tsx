@@ -5,23 +5,27 @@ import Link from "next/link";
 import React, { useEffect, useState } from "react";
 import { Logo } from "@/components/Logo";
 import { ThemeTogglerComponent } from "@/components/theme/theme-toggle";
+import { useGithubStars } from "@/hooks/use-github-stars";
 import { cn } from "@/lib/utils";
 
 export const Navbar = () => {
 	const [isScrolled, setIsScrolled] = useState(false);
 
 	const navItems = [
-		{ name: "Home", link: "/" },
+		// { name: "Home", link: "/" },
 		{ name: "Pricing", link: "/pricing" },
-		{ name: "Sign In", link: "/login" },
+		// { name: "Sign In", link: "/login" },
 		{ name: "Docs", link: "/docs" },
 	];
 
 	useEffect(() => {
+		if (typeof window === "undefined") return;
+
 		const handleScroll = () => {
 			setIsScrolled(window.scrollY > 20);
 		};
 
+		handleScroll();
 		window.addEventListener("scroll", handleScroll);
 		return () => window.removeEventListener("scroll", handleScroll);
 	}, []);
@@ -36,6 +40,7 @@ export const Navbar = () => {
 
 const DesktopNav = ({ navItems, isScrolled }: any) => {
 	const [hovered, setHovered] = useState<number | null>(null);
+	const { compactFormat: githubStars, loading: loadingGithubStars } = useGithubStars();
 	return (
 		<motion.div
 			onMouseLeave={() => {
@@ -48,7 +53,7 @@ const DesktopNav = ({ navItems, isScrolled }: any) => {
 					: "bg-transparent border border-transparent"
 			)}
 		>
-			<div className="flex flex-row items-center gap-2">
+			<div className="flex flex-1 flex-row items-center gap-2">
 				<Logo className="h-8 w-8 rounded-md" />
 				<span className="dark:text-white/90 text-gray-800 text-lg font-bold">SurfSense</span>
 			</div>
@@ -56,6 +61,7 @@ const DesktopNav = ({ navItems, isScrolled }: any) => {
 				{navItems.map((navItem: any, idx: number) => (
 					<Link
 						onMouseEnter={() => setHovered(idx)}
+						onMouseLeave={() => setHovered(null)}
 						className="relative px-4 py-2 text-neutral-600 dark:text-neutral-300"
 						key={`link=${idx}`}
 						href={navItem.link}
@@ -70,7 +76,7 @@ const DesktopNav = ({ navItems, isScrolled }: any) => {
 					</Link>
 				))}
 			</div>
-			<div className="flex items-center gap-2">
+			<div className="flex flex-1 items-center justify-end gap-2">
 				<Link
 					href="https://discord.gg/ejRNvftDp9"
 					target="_blank"
@@ -86,14 +92,20 @@ const DesktopNav = ({ navItems, isScrolled }: any) => {
 					className="hidden rounded-full px-3 py-2 hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors md:flex items-center gap-1.5"
 				>
 					<IconBrandGithub className="h-5 w-5 text-neutral-600 dark:text-neutral-300" />
-					<span className="text-sm font-medium text-neutral-600 dark:text-neutral-300">8.3k</span>
+					{loadingGithubStars ? (
+						<div className="w-6 h-5 dark:bg-neutral-800 animate-pulse"></div>
+					) : (
+						<span className="text-sm font-medium text-neutral-600 dark:text-neutral-300">
+							{githubStars}
+						</span>
+					)}
 				</Link>
 				<ThemeTogglerComponent />
 				<Link
-					href="/contact"
+					href="/login"
 					className="hidden rounded-full bg-black px-8 py-2 text-sm font-bold text-white shadow-[0px_-2px_0px_0px_rgba(255,255,255,0.4)_inset] md:block dark:bg-white dark:text-black"
 				>
-					Book a call
+					Sign In
 				</Link>
 			</div>
 		</motion.div>
@@ -102,6 +114,7 @@ const DesktopNav = ({ navItems, isScrolled }: any) => {
 
 const MobileNav = ({ navItems, isScrolled }: any) => {
 	const [open, setOpen] = useState(false);
+	const { compactFormat: githubStars, loading: loadingGithubStars } = useGithubStars();
 
 	return (
 		<>
@@ -120,11 +133,18 @@ const MobileNav = ({ navItems, isScrolled }: any) => {
 						<Logo className="h-8 w-8 rounded-md" />
 						<span className="dark:text-white/90 text-gray-800 text-lg font-bold">SurfSense</span>
 					</div>
-					{open ? (
-						<IconX className="text-black dark:text-white" onClick={() => setOpen(!open)} />
-					) : (
-						<IconMenu2 className="text-black dark:text-white" onClick={() => setOpen(!open)} />
-					)}
+					<button
+						type="button"
+						onClick={() => setOpen(!open)}
+						className="relative z-50 flex items-center justify-center p-2 -mr-2 rounded-lg hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors touch-manipulation"
+						aria-label={open ? "Close menu" : "Open menu"}
+					>
+						{open ? (
+							<IconX className="h-6 w-6 text-black dark:text-white" />
+						) : (
+							<IconMenu2 className="h-6 w-6 text-black dark:text-white" />
+						)}
+					</button>
 				</div>
 
 				<AnimatePresence>
@@ -146,10 +166,10 @@ const MobileNav = ({ navItems, isScrolled }: any) => {
 							))}
 							<div className="flex w-full items-center gap-2 pt-2">
 								<Link
-									href="https://discord.gg/your-server"
+									href="https://discord.gg/ejRNvftDp9"
 									target="_blank"
 									rel="noopener noreferrer"
-									className="flex items-center justify-center rounded-lg p-2 hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors"
+									className="flex items-center justify-center rounded-lg p-2 hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors touch-manipulation"
 								>
 									<IconBrandDiscord className="h-5 w-5 text-neutral-600 dark:text-neutral-300" />
 								</Link>
@@ -157,17 +177,25 @@ const MobileNav = ({ navItems, isScrolled }: any) => {
 									href="https://github.com/MODSetter/SurfSense"
 									target="_blank"
 									rel="noopener noreferrer"
-									className="flex items-center gap-1.5 rounded-lg px-3 py-2 hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors"
+									className="flex items-center gap-1.5 rounded-lg px-3 py-2 hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors touch-manipulation"
 								>
 									<IconBrandGithub className="h-5 w-5 text-neutral-600 dark:text-neutral-300" />
-									<span className="text-sm font-medium text-neutral-600 dark:text-neutral-300">
-										8.3k
-									</span>
+									{loadingGithubStars ? (
+										<div className="w-6 h-5 dark:bg-neutral-800 animate-pulse"></div>
+									) : (
+										<span className="text-sm font-medium text-neutral-600 dark:text-neutral-300">
+											{githubStars}
+										</span>
+									)}
 								</Link>
+								<ThemeTogglerComponent />
 							</div>
-							<button className="w-full rounded-lg bg-black px-8 py-2 font-medium text-white shadow-[0px_-2px_0px_0px_rgba(255,255,255,0.4)_inset] dark:bg-white dark:text-black">
-								Book a call
-							</button>
+							<Link
+								href="/login"
+								className="w-full rounded-lg bg-black px-8 py-2 font-medium text-white shadow-[0px_-2px_0px_0px_rgba(255,255,255,0.4)_inset] dark:bg-white dark:text-black text-center touch-manipulation"
+							>
+								Sign In
+							</Link>
 						</motion.div>
 					)}
 				</AnimatePresence>

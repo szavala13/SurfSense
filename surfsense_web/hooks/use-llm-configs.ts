@@ -10,9 +10,11 @@ export interface LLMConfig {
 	model_name: string;
 	api_key: string;
 	api_base?: string;
+	language?: string;
 	litellm_params?: Record<string, any>;
-	created_at: string;
-	search_space_id: number;
+	created_at?: string;
+	search_space_id?: number;
+	is_global?: boolean;
 }
 
 export interface LLMPreferences {
@@ -31,6 +33,7 @@ export interface CreateLLMConfig {
 	model_name: string;
 	api_key: string;
 	api_base?: string;
+	language?: string;
 	litellm_params?: Record<string, any>;
 	search_space_id: number;
 }
@@ -59,7 +62,7 @@ export function useLLMConfigs(searchSpaceId: number | null) {
 		try {
 			setLoading(true);
 			const response = await fetch(
-				`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/llm-configs/?search_space_id=${searchSpaceId}`,
+				`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/llm-configs?search_space_id=${searchSpaceId}`,
 				{
 					headers: {
 						Authorization: `Bearer ${localStorage.getItem("surfsense_bearer_token")}`,
@@ -90,7 +93,7 @@ export function useLLMConfigs(searchSpaceId: number | null) {
 	const createLLMConfig = async (config: CreateLLMConfig): Promise<LLMConfig | null> => {
 		try {
 			const response = await fetch(
-				`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/llm-configs/`,
+				`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/llm-configs`,
 				{
 					method: "POST",
 					headers: {
@@ -279,5 +282,50 @@ export function useLLMPreferences(searchSpaceId: number | null) {
 		updatePreferences,
 		refreshPreferences: fetchPreferences,
 		isOnboardingComplete,
+	};
+}
+
+export function useGlobalLLMConfigs() {
+	const [globalConfigs, setGlobalConfigs] = useState<LLMConfig[]>([]);
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState<string | null>(null);
+
+	const fetchGlobalConfigs = async () => {
+		try {
+			setLoading(true);
+			const response = await fetch(
+				`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/global-llm-configs`,
+				{
+					headers: {
+						Authorization: `Bearer ${localStorage.getItem("surfsense_bearer_token")}`,
+					},
+					method: "GET",
+				}
+			);
+
+			if (!response.ok) {
+				throw new Error("Failed to fetch global LLM configurations");
+			}
+
+			const data = await response.json();
+			setGlobalConfigs(data);
+			setError(null);
+		} catch (err: any) {
+			setError(err.message || "Failed to fetch global LLM configurations");
+			console.error("Error fetching global LLM configurations:", err);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	useEffect(() => {
+		fetchGlobalConfigs();
+	}, []);
+
+	return {
+		globalConfigs,
+		loading,
+		error,
+		refreshGlobalConfigs: fetchGlobalConfigs,
 	};
 }

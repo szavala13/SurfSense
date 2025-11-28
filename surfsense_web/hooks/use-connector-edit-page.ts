@@ -16,6 +16,38 @@ import {
 	useSearchSourceConnectors,
 } from "@/hooks/use-search-source-connectors";
 
+const normalizeListInput = (value: unknown): string[] => {
+	if (Array.isArray(value)) {
+		return value.map((item) => String(item).trim()).filter((item) => item.length > 0);
+	}
+	if (typeof value === "string") {
+		return value
+			.split(",")
+			.map((item) => item.trim())
+			.filter((item) => item.length > 0);
+	}
+	return [];
+};
+
+const arraysEqual = (a: string[], b: string[]): boolean => {
+	if (a.length !== b.length) return false;
+	return a.every((value, index) => value === b[index]);
+};
+
+const normalizeBoolean = (value: unknown): boolean | null => {
+	if (typeof value === "boolean") return value;
+	if (typeof value === "string") {
+		const lowered = value.trim().toLowerCase();
+		if (["true", "1", "yes", "on"].includes(lowered)) return true;
+		if (["false", "0", "no", "off"].includes(lowered)) return false;
+	}
+	if (typeof value === "number") {
+		if (value === 1) return true;
+		if (value === 0) return false;
+	}
+	return null;
+};
+
 export function useConnectorEditPage(connectorId: number, searchSpaceId: string) {
 	const router = useRouter();
 	const {
@@ -48,6 +80,13 @@ export function useConnectorEditPage(connectorId: number, searchSpaceId: string)
 			NOTION_INTEGRATION_TOKEN: "",
 			SERPER_API_KEY: "",
 			TAVILY_API_KEY: "",
+			SEARXNG_HOST: "",
+			SEARXNG_API_KEY: "",
+			SEARXNG_ENGINES: "",
+			SEARXNG_CATEGORIES: "",
+			SEARXNG_LANGUAGE: "",
+			SEARXNG_SAFESEARCH: "",
+			SEARXNG_VERIFY_SSL: "",
 			LINEAR_API_KEY: "",
 			DISCORD_BOT_TOKEN: "",
 			CONFLUENCE_BASE_URL: "",
@@ -57,6 +96,9 @@ export function useConnectorEditPage(connectorId: number, searchSpaceId: string)
 			JIRA_EMAIL: "",
 			JIRA_API_TOKEN: "",
 			LUMA_API_KEY: "",
+			ELASTICSEARCH_API_KEY: "",
+			FIRECRAWL_API_KEY: "",
+			INITIAL_URLS: "",
 		},
 	});
 
@@ -74,6 +116,23 @@ export function useConnectorEditPage(connectorId: number, searchSpaceId: string)
 					NOTION_INTEGRATION_TOKEN: config.NOTION_INTEGRATION_TOKEN || "",
 					SERPER_API_KEY: config.SERPER_API_KEY || "",
 					TAVILY_API_KEY: config.TAVILY_API_KEY || "",
+					SEARXNG_HOST: config.SEARXNG_HOST || "",
+					SEARXNG_API_KEY: config.SEARXNG_API_KEY || "",
+					SEARXNG_ENGINES: Array.isArray(config.SEARXNG_ENGINES)
+						? config.SEARXNG_ENGINES.join(", ")
+						: config.SEARXNG_ENGINES || "",
+					SEARXNG_CATEGORIES: Array.isArray(config.SEARXNG_CATEGORIES)
+						? config.SEARXNG_CATEGORIES.join(", ")
+						: config.SEARXNG_CATEGORIES || "",
+					SEARXNG_LANGUAGE: config.SEARXNG_LANGUAGE || "",
+					SEARXNG_SAFESEARCH:
+						config.SEARXNG_SAFESEARCH !== undefined && config.SEARXNG_SAFESEARCH !== null
+							? String(config.SEARXNG_SAFESEARCH)
+							: "",
+					SEARXNG_VERIFY_SSL:
+						config.SEARXNG_VERIFY_SSL !== undefined && config.SEARXNG_VERIFY_SSL !== null
+							? String(config.SEARXNG_VERIFY_SSL)
+							: "",
 					LINEAR_API_KEY: config.LINEAR_API_KEY || "",
 					LINKUP_API_KEY: config.LINKUP_API_KEY || "",
 					DISCORD_BOT_TOKEN: config.DISCORD_BOT_TOKEN || "",
@@ -84,6 +143,9 @@ export function useConnectorEditPage(connectorId: number, searchSpaceId: string)
 					JIRA_EMAIL: config.JIRA_EMAIL || "",
 					JIRA_API_TOKEN: config.JIRA_API_TOKEN || "",
 					LUMA_API_KEY: config.LUMA_API_KEY || "",
+					ELASTICSEARCH_API_KEY: config.ELASTICSEARCH_API_KEY || "",
+					FIRECRAWL_API_KEY: config.FIRECRAWL_API_KEY || "",
+					INITIAL_URLS: config.INITIAL_URLS || "",
 				});
 				if (currentConnector.connector_type === "GITHUB_CONNECTOR") {
 					const savedRepos = config.repo_full_names || [];
@@ -119,7 +181,7 @@ export function useConnectorEditPage(connectorId: number, searchSpaceId: string)
 				const token = localStorage.getItem("surfsense_bearer_token");
 				if (!token) throw new Error("No auth token");
 				const response = await fetch(
-					`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/github/repositories/`,
+					`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/github/repositories`,
 					{
 						method: "POST",
 						headers: {
@@ -238,6 +300,88 @@ export function useConnectorEditPage(connectorId: number, searchSpaceId: string)
 						newConfig = { TAVILY_API_KEY: formData.TAVILY_API_KEY };
 					}
 					break;
+				case "SEARXNG_API": {
+					const host = (formData.SEARXNG_HOST || "").trim();
+					if (!host) {
+						toast.error("SearxNG host is required.");
+						setIsSaving(false);
+						return;
+					}
+
+					const candidateConfig: Record<string, any> = { SEARXNG_HOST: host };
+					let hasChanges = host !== (originalConfig.SEARXNG_HOST || "").trim();
+
+					const apiKey = (formData.SEARXNG_API_KEY || "").trim();
+					const originalApiKey = (originalConfig.SEARXNG_API_KEY || "").trim();
+					if (apiKey !== originalApiKey) {
+						candidateConfig.SEARXNG_API_KEY = apiKey || null;
+						hasChanges = true;
+					}
+
+					const newEngines = normalizeListInput(formData.SEARXNG_ENGINES || "");
+					const originalEngines = normalizeListInput(originalConfig.SEARXNG_ENGINES);
+					if (!arraysEqual(newEngines, originalEngines)) {
+						candidateConfig.SEARXNG_ENGINES = newEngines;
+						hasChanges = true;
+					}
+
+					const newCategories = normalizeListInput(formData.SEARXNG_CATEGORIES || "");
+					const originalCategories = normalizeListInput(originalConfig.SEARXNG_CATEGORIES);
+					if (!arraysEqual(newCategories, originalCategories)) {
+						candidateConfig.SEARXNG_CATEGORIES = newCategories;
+						hasChanges = true;
+					}
+
+					const language = (formData.SEARXNG_LANGUAGE || "").trim();
+					const originalLanguage = (originalConfig.SEARXNG_LANGUAGE || "").trim();
+					if (language !== originalLanguage) {
+						candidateConfig.SEARXNG_LANGUAGE = language || null;
+						hasChanges = true;
+					}
+
+					const safesearchRaw = (formData.SEARXNG_SAFESEARCH || "").trim();
+					const originalSafesearch = originalConfig.SEARXNG_SAFESEARCH;
+					if (safesearchRaw) {
+						const parsed = Number(safesearchRaw);
+						if (Number.isNaN(parsed) || !Number.isInteger(parsed) || parsed < 0 || parsed > 2) {
+							toast.error("SearxNG SafeSearch must be 0, 1, or 2.");
+							setIsSaving(false);
+							return;
+						}
+						if (parsed !== Number(originalSafesearch)) {
+							candidateConfig.SEARXNG_SAFESEARCH = parsed;
+							hasChanges = true;
+						}
+					} else if (originalSafesearch !== undefined && originalSafesearch !== null) {
+						candidateConfig.SEARXNG_SAFESEARCH = null;
+						hasChanges = true;
+					}
+
+					const verifyRaw = (formData.SEARXNG_VERIFY_SSL || "").trim().toLowerCase();
+					const originalVerifyBool = normalizeBoolean(originalConfig.SEARXNG_VERIFY_SSL);
+					if (verifyRaw) {
+						let parsedBool: boolean | null = null;
+						if (["true", "1", "yes", "on"].includes(verifyRaw)) parsedBool = true;
+						else if (["false", "0", "no", "off"].includes(verifyRaw)) parsedBool = false;
+						if (parsedBool === null) {
+							toast.error("SearxNG SSL verification must be true or false.");
+							setIsSaving(false);
+							return;
+						}
+						if (parsedBool !== originalVerifyBool) {
+							candidateConfig.SEARXNG_VERIFY_SSL = parsedBool;
+							hasChanges = true;
+						}
+					} else if (originalVerifyBool !== null) {
+						candidateConfig.SEARXNG_VERIFY_SSL = null;
+						hasChanges = true;
+					}
+
+					if (hasChanges) {
+						newConfig = candidateConfig;
+					}
+					break;
+				}
 
 				case "LINEAR_CONNECTOR":
 					if (formData.LINEAR_API_KEY !== originalConfig.LINEAR_API_KEY) {
@@ -319,6 +463,45 @@ export function useConnectorEditPage(connectorId: number, searchSpaceId: string)
 						newConfig = { LUMA_API_KEY: formData.LUMA_API_KEY };
 					}
 					break;
+				case "ELASTICSEARCH_CONNECTOR":
+					if (formData.ELASTICSEARCH_API_KEY !== originalConfig.ELASTICSEARCH_API_KEY) {
+						if (!formData.ELASTICSEARCH_API_KEY) {
+							toast.error("Elasticsearch API Key cannot be empty.");
+							setIsSaving(false);
+							return;
+						}
+						newConfig = { ELASTICSEARCH_API_KEY: formData.ELASTICSEARCH_API_KEY };
+					}
+					break;
+				case "WEBCRAWLER_CONNECTOR":
+					if (
+						formData.FIRECRAWL_API_KEY !== originalConfig.FIRECRAWL_API_KEY ||
+						formData.INITIAL_URLS !== originalConfig.INITIAL_URLS
+					) {
+						newConfig = {};
+
+						if (formData.FIRECRAWL_API_KEY && formData.FIRECRAWL_API_KEY.trim()) {
+							if (!formData.FIRECRAWL_API_KEY.startsWith("fc-")) {
+								toast.warning(
+									"Firecrawl API keys typically start with 'fc-'. Please verify your key."
+								);
+							}
+							newConfig.FIRECRAWL_API_KEY = formData.FIRECRAWL_API_KEY.trim();
+						} else if (originalConfig.FIRECRAWL_API_KEY) {
+							toast.info(
+								"Firecrawl API key removed. Web crawler will use AsyncChromiumLoader as fallback."
+							);
+						}
+
+						if (formData.INITIAL_URLS !== undefined) {
+							if (formData.INITIAL_URLS && formData.INITIAL_URLS.trim()) {
+								newConfig.INITIAL_URLS = formData.INITIAL_URLS.trim();
+							} else if (originalConfig.INITIAL_URLS) {
+								toast.info("URLs removed from crawler configuration.");
+							}
+						}
+					}
+					break;
 			}
 
 			if (newConfig !== null) {
@@ -367,6 +550,30 @@ export function useConnectorEditPage(connectorId: number, searchSpaceId: string)
 						editForm.setValue("SERPER_API_KEY", newlySavedConfig.SERPER_API_KEY || "");
 					} else if (connector.connector_type === "TAVILY_API") {
 						editForm.setValue("TAVILY_API_KEY", newlySavedConfig.TAVILY_API_KEY || "");
+					} else if (connector.connector_type === "SEARXNG_API") {
+						editForm.setValue("SEARXNG_HOST", newlySavedConfig.SEARXNG_HOST || "");
+						editForm.setValue("SEARXNG_API_KEY", newlySavedConfig.SEARXNG_API_KEY || "");
+						editForm.setValue(
+							"SEARXNG_ENGINES",
+							normalizeListInput(newlySavedConfig.SEARXNG_ENGINES).join(", ")
+						);
+						editForm.setValue(
+							"SEARXNG_CATEGORIES",
+							normalizeListInput(newlySavedConfig.SEARXNG_CATEGORIES).join(", ")
+						);
+						editForm.setValue("SEARXNG_LANGUAGE", newlySavedConfig.SEARXNG_LANGUAGE || "");
+						editForm.setValue(
+							"SEARXNG_SAFESEARCH",
+							newlySavedConfig.SEARXNG_SAFESEARCH === null ||
+								newlySavedConfig.SEARXNG_SAFESEARCH === undefined
+								? ""
+								: String(newlySavedConfig.SEARXNG_SAFESEARCH)
+						);
+						const verifyValue = normalizeBoolean(newlySavedConfig.SEARXNG_VERIFY_SSL);
+						editForm.setValue(
+							"SEARXNG_VERIFY_SSL",
+							verifyValue === null ? "" : String(verifyValue)
+						);
 					} else if (connector.connector_type === "LINEAR_CONNECTOR") {
 						editForm.setValue("LINEAR_API_KEY", newlySavedConfig.LINEAR_API_KEY || "");
 					} else if (connector.connector_type === "LINKUP_API") {
@@ -383,6 +590,14 @@ export function useConnectorEditPage(connectorId: number, searchSpaceId: string)
 						editForm.setValue("JIRA_API_TOKEN", newlySavedConfig.JIRA_API_TOKEN || "");
 					} else if (connector.connector_type === "LUMA_CONNECTOR") {
 						editForm.setValue("LUMA_API_KEY", newlySavedConfig.LUMA_API_KEY || "");
+					} else if (connector.connector_type === "ELASTICSEARCH_CONNECTOR") {
+						editForm.setValue(
+							"ELASTICSEARCH_API_KEY",
+							newlySavedConfig.ELASTICSEARCH_API_KEY || ""
+						);
+					} else if (connector.connector_type === "WEBCRAWLER_CONNECTOR") {
+						editForm.setValue("FIRECRAWL_API_KEY", newlySavedConfig.FIRECRAWL_API_KEY || "");
+						editForm.setValue("INITIAL_URLS", newlySavedConfig.INITIAL_URLS || "");
 					}
 				}
 				if (connector.connector_type === "GITHUB_CONNECTOR") {

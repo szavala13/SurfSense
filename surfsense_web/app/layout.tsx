@@ -1,9 +1,13 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { GoogleAnalytics } from "@next/third-parties/google";
 import { RootProvider } from "fumadocs-ui/provider";
 import { Roboto } from "next/font/google";
+import { I18nProvider } from "@/components/providers/I18nProvider";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
+import { LocaleProvider } from "@/contexts/LocaleContext";
+import { ReactQueryClientProvider } from "@/lib/query-client/query-client.provider";
 import { cn } from "@/lib/utils";
 
 const roboto = Roboto({
@@ -77,25 +81,33 @@ export const metadata: Metadata = {
 	},
 };
 
-export default async function RootLayout({
+export default function RootLayout({
 	children,
 }: Readonly<{
 	children: React.ReactNode;
 }>) {
+	// Using client-side i18n
+	// Language can be switched dynamically through LanguageSwitcher component
+	// Locale state is managed by LocaleContext and persisted in localStorage
 	return (
 		<html lang="en" suppressHydrationWarning>
-			<body className={cn(roboto.className, "bg-white dark:bg-black antialiased h-full w-full")}>
-				<ThemeProvider
-					attribute="class"
-					enableSystem
-					disableTransitionOnChange
-					defaultTheme="light"
-				>
-					<RootProvider>
-						{children}
-						<Toaster />
-					</RootProvider>
-				</ThemeProvider>
+			<GoogleAnalytics gaId="G-T4CHE7W3TE" />
+			<body className={cn(roboto.className, "bg-white dark:bg-black antialiased h-full w-full ")}>
+				<LocaleProvider>
+					<I18nProvider>
+						<ThemeProvider
+							attribute="class"
+							enableSystem
+							disableTransitionOnChange
+							defaultTheme="light"
+						>
+							<RootProvider>
+								<ReactQueryClientProvider>{children}</ReactQueryClientProvider>
+								<Toaster />
+							</RootProvider>
+						</ThemeProvider>
+					</I18nProvider>
+				</LocaleProvider>
 			</body>
 		</html>
 	);

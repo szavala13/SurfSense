@@ -2,6 +2,7 @@
 
 import { CircleAlert, CircleX, Columns3, Filter, ListFilter, Trash } from "lucide-react";
 import { AnimatePresence, motion, type Variants } from "motion/react";
+import { useTranslations } from "next-intl";
 import React, { useMemo, useRef } from "react";
 import {
 	AlertDialog,
@@ -26,7 +27,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import type { ColumnVisibility, Document } from "./types";
+import type { ColumnVisibility } from "./types";
 
 const fadeInScale: Variants = {
 	hidden: { opacity: 0, scale: 0.95 },
@@ -35,8 +36,7 @@ const fadeInScale: Variants = {
 };
 
 export function DocumentsFilters({
-	allDocuments,
-	visibleDocuments: _visibleDocuments,
+	typeCounts: typeCountsRecord,
 	selectedIds,
 	onSearch,
 	searchValue,
@@ -46,8 +46,7 @@ export function DocumentsFilters({
 	columnVisibility,
 	onToggleColumn,
 }: {
-	allDocuments: Document[];
-	visibleDocuments: Document[];
+	typeCounts: Record<string, number>;
 	selectedIds: Set<number>;
 	onSearch: (v: string) => void;
 	searchValue: string;
@@ -57,20 +56,21 @@ export function DocumentsFilters({
 	columnVisibility: ColumnVisibility;
 	onToggleColumn: (id: keyof ColumnVisibility, checked: boolean) => void;
 }) {
+	const t = useTranslations("documents");
 	const id = React.useId();
 	const inputRef = useRef<HTMLInputElement>(null);
 
 	const uniqueTypes = useMemo(() => {
-		const set = new Set<string>();
-		for (const d of allDocuments) set.add(d.document_type);
-		return Array.from(set).sort();
-	}, [allDocuments]);
+		return Object.keys(typeCountsRecord).sort();
+	}, [typeCountsRecord]);
 
 	const typeCounts = useMemo(() => {
 		const map = new Map<string, number>();
-		for (const d of allDocuments) map.set(d.document_type, (map.get(d.document_type) ?? 0) + 1);
+		for (const [type, count] of Object.entries(typeCountsRecord)) {
+			map.set(type, count);
+		}
 		return map;
-	}, [allDocuments]);
+	}, [typeCountsRecord]);
 
 	return (
 		<motion.div
@@ -92,9 +92,9 @@ export function DocumentsFilters({
 						className="peer min-w-60 ps-9"
 						value={searchValue}
 						onChange={(e) => onSearch(e.target.value)}
-						placeholder="Filter by title..."
+						placeholder={t("filter_placeholder")}
 						type="text"
-						aria-label="Filter by title"
+						aria-label={t("filter_placeholder")}
 					/>
 					<motion.div
 						className="pointer-events-none absolute inset-y-0 start-0 flex items-center justify-center ps-3 text-muted-foreground/80 peer-disabled:opacity-50"

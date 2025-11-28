@@ -29,18 +29,20 @@ export type DocumentType =
 	| "GOOGLE_CALENDAR_CONNECTOR"
 	| "GOOGLE_GMAIL_CONNECTOR"
 	| "AIRTABLE_CONNECTOR"
-	| "LUMA_CONNECTOR";
+	| "LUMA_CONNECTOR"
+	| "ELASTICSEARCH_CONNECTOR";
 
 export interface UseDocumentsOptions {
 	page?: number;
 	pageSize?: number;
 	lazy?: boolean;
+	documentTypes?: string[];
 }
 
 export function useDocuments(searchSpaceId: number, options?: UseDocumentsOptions | boolean) {
 	// Support both old boolean API and new options API for backward compatibility
 	const opts = typeof options === "boolean" ? { lazy: options } : options || {};
-	const { page, pageSize = 300, lazy = false } = opts;
+	const { page, pageSize = 300, lazy = false, documentTypes } = opts;
 
 	const [documents, setDocuments] = useState<Document[]>([]);
 	const [total, setTotal] = useState(0);
@@ -49,7 +51,7 @@ export function useDocuments(searchSpaceId: number, options?: UseDocumentsOption
 	const [isLoaded, setIsLoaded] = useState(false); // Memoization flag
 
 	const fetchDocuments = useCallback(
-		async (fetchPage?: number, fetchPageSize?: number) => {
+		async (fetchPage?: number, fetchPageSize?: number, fetchDocumentTypes?: string[]) => {
 			if (isLoaded && lazy) return; // Avoid redundant calls in lazy mode
 
 			try {
@@ -63,12 +65,17 @@ export function useDocuments(searchSpaceId: number, options?: UseDocumentsOption
 				// Use passed parameters or fall back to state/options
 				const effectivePage = fetchPage !== undefined ? fetchPage : page;
 				const effectivePageSize = fetchPageSize !== undefined ? fetchPageSize : pageSize;
+				const effectiveDocumentTypes =
+					fetchDocumentTypes !== undefined ? fetchDocumentTypes : documentTypes;
 
 				if (effectivePage !== undefined) {
 					params.append("page", effectivePage.toString());
 				}
 				if (effectivePageSize !== undefined) {
 					params.append("page_size", effectivePageSize.toString());
+				}
+				if (effectiveDocumentTypes && effectiveDocumentTypes.length > 0) {
+					params.append("document_types", effectiveDocumentTypes.join(","));
 				}
 
 				const response = await fetch(
@@ -99,7 +106,7 @@ export function useDocuments(searchSpaceId: number, options?: UseDocumentsOption
 				setLoading(false);
 			}
 		},
-		[searchSpaceId, page, pageSize, isLoaded, lazy]
+		[searchSpaceId, page, pageSize, documentTypes, isLoaded, lazy]
 	);
 
 	useEffect(() => {
@@ -116,10 +123,15 @@ export function useDocuments(searchSpaceId: number, options?: UseDocumentsOption
 
 	// Function to search documents by title
 	const searchDocuments = useCallback(
-		async (searchQuery: string, fetchPage?: number, fetchPageSize?: number) => {
+		async (
+			searchQuery: string,
+			fetchPage?: number,
+			fetchPageSize?: number,
+			fetchDocumentTypes?: string[]
+		) => {
 			if (!searchQuery.trim()) {
 				// If search is empty, fetch all documents
-				return fetchDocuments(fetchPage, fetchPageSize);
+				return fetchDocuments(fetchPage, fetchPageSize, fetchDocumentTypes);
 			}
 
 			try {
@@ -134,6 +146,8 @@ export function useDocuments(searchSpaceId: number, options?: UseDocumentsOption
 				// Use passed parameters or fall back to state/options
 				const effectivePage = fetchPage !== undefined ? fetchPage : page;
 				const effectivePageSize = fetchPageSize !== undefined ? fetchPageSize : pageSize;
+				const effectiveDocumentTypes =
+					fetchDocumentTypes !== undefined ? fetchDocumentTypes : documentTypes;
 
 				if (effectivePage !== undefined) {
 					params.append("page", effectivePage.toString());
@@ -141,9 +155,12 @@ export function useDocuments(searchSpaceId: number, options?: UseDocumentsOption
 				if (effectivePageSize !== undefined) {
 					params.append("page_size", effectivePageSize.toString());
 				}
+				if (effectiveDocumentTypes && effectiveDocumentTypes.length > 0) {
+					params.append("document_types", effectiveDocumentTypes.join(","));
+				}
 
 				const response = await fetch(
-					`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/documents/search/?${params.toString()}`,
+					`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/documents/search?${params.toString()}`,
 					{
 						headers: {
 							Authorization: `Bearer ${localStorage.getItem("surfsense_bearer_token")}`,
@@ -169,7 +186,7 @@ export function useDocuments(searchSpaceId: number, options?: UseDocumentsOption
 				setLoading(false);
 			}
 		},
-		[searchSpaceId, page, pageSize, fetchDocuments]
+		[searchSpaceId, page, pageSize, documentTypes, fetchDocuments]
 	);
 
 	// Function to delete a document
@@ -204,6 +221,35 @@ export function useDocuments(searchSpaceId: number, options?: UseDocumentsOption
 		[documents]
 	);
 
+	// Function to get document type counts
+	const getDocumentTypeCounts = useCallback(async () => {
+		try {
+			const params = new URLSearchParams({
+				search_space_id: searchSpaceId.toString(),
+			});
+
+			const response = await fetch(
+				`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/documents/type-counts?${params.toString()}`,
+				{
+					headers: {
+						Authorization: `Bearer ${localStorage.getItem("surfsense_bearer_token")}`,
+					},
+					method: "GET",
+				}
+			);
+
+			if (!response.ok) {
+				throw new Error("Failed to fetch document type counts");
+			}
+
+			const counts = await response.json();
+			return counts as Record<string, number>;
+		} catch (err: any) {
+			console.error("Error fetching document type counts:", err);
+			return {};
+		}
+	}, [searchSpaceId]);
+
 	return {
 		documents,
 		total,
@@ -214,5 +260,6 @@ export function useDocuments(searchSpaceId: number, options?: UseDocumentsOption
 		searchDocuments, // Search function
 		refreshDocuments,
 		deleteDocument,
+		getDocumentTypeCounts, // Get type counts function
 	};
 }

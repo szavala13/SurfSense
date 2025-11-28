@@ -17,7 +17,7 @@ Before you begin, ensure you have:
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) installed on your machine
 - [Git](https://git-scm.com/downloads) (to clone the repository)
 - Completed all the [prerequisite setup steps](/docs) including:
-  - PGVector setup
+  - Auth setup
   - **File Processing ETL Service** (choose one):
     - Unstructured.io API key (Supports 34+ formats)
     - LlamaIndex API key (enhanced parsing, supports 50+ formats)
@@ -56,7 +56,7 @@ Before you begin, ensure you have:
 
     Edit all `.env` files and fill in the required values:
 
-### Docker-Specific Environment Variables
+### Docker-Specific Environment Variables (Optional)
 
 | ENV VARIABLE               | DESCRIPTION                                                                 | DEFAULT VALUE       |
 |----------------------------|-----------------------------------------------------------------------------|---------------------|
@@ -64,12 +64,18 @@ Before you begin, ensure you have:
 | BACKEND_PORT               | Port for the backend API service                                            | 8000                |
 | POSTGRES_PORT              | Port for the PostgreSQL database                                            | 5432                |
 | PGADMIN_PORT               | Port for pgAdmin web interface                                              | 5050                |
+| REDIS_PORT                 | Port for Redis (used by Celery)                                             | 6379                |
+| FLOWER_PORT                | Port for Flower (Celery monitoring tool)                                    | 5555                |
 | POSTGRES_USER              | PostgreSQL username                                                         | postgres            |
 | POSTGRES_PASSWORD          | PostgreSQL password                                                         | postgres            |
 | POSTGRES_DB                | PostgreSQL database name                                                    | surfsense           |
 | PGADMIN_DEFAULT_EMAIL      | Email for pgAdmin login                                                     | admin@surfsense.com |
 | PGADMIN_DEFAULT_PASSWORD   | Password for pgAdmin login                                                  | surfsense           |
-| NEXT_PUBLIC_API_URL        | URL of the backend API (used by frontend)                                   | http://backend:8000 |
+| NEXT_PUBLIC_FASTAPI_BACKEND_URL | URL of the backend API (used by frontend during build and runtime)     | http://localhost:8000 |
+| NEXT_PUBLIC_FASTAPI_BACKEND_AUTH_TYPE | Authentication method for frontend: `LOCAL` or `GOOGLE`           | LOCAL               |
+| NEXT_PUBLIC_ETL_SERVICE    | Document parsing service for frontend UI: `UNSTRUCTURED`, `LLAMACLOUD`, or `DOCLING` | DOCLING |
+
+**Note:** Frontend environment variables with the `NEXT_PUBLIC_` prefix are embedded into the Next.js production build at build time. Since the frontend now runs as a production build in Docker, these variables must be set in the root `.env` file (Docker-specific configuration) and will be passed as build arguments during the Docker build process.
 
 **Backend Environment Variables:**
 
@@ -81,19 +87,24 @@ Before you begin, ensure you have:
 | AUTH_TYPE                  | Authentication method: `GOOGLE` for OAuth with Google, `LOCAL` for email/password authentication                                                                                          |
 | GOOGLE_OAUTH_CLIENT_ID     | (Optional) Client ID from Google Cloud Console (required if AUTH_TYPE=GOOGLE)                                                                                                                        |
 | GOOGLE_OAUTH_CLIENT_SECRET | (Optional) Client secret from Google Cloud Console (required if AUTH_TYPE=GOOGLE)                                                                                                                    |
-| EMBEDDING_MODEL            | Name of the embedding model (e.g., `mixedbread-ai/mxbai-embed-large-v1`)                                                                                                                 |
-| RERANKERS_MODEL_NAME       | Name of the reranker model (e.g., `ms-marco-MiniLM-L-12-v2`)                                                                                                                              |
-| RERANKERS_MODEL_TYPE       | Type of reranker model (e.g., `flashrank`)                                                                                                                                                |
+| EMBEDDING_MODEL            | Name of the embedding model (e.g., `sentence-transformers/all-MiniLM-L6-v2`, `openai://text-embedding-ada-002`)                                                                                                                 |
+| RERANKERS_ENABLED          | (Optional) Enable or disable document reranking for improved search results (e.g., `TRUE` or `FALSE`, default: `FALSE`)                                                                  |
+| RERANKERS_MODEL_NAME       | Name of the reranker model (e.g., `ms-marco-MiniLM-L-12-v2`) (required if RERANKERS_ENABLED=TRUE)                                                                                        |
+| RERANKERS_MODEL_TYPE       | Type of reranker model (e.g., `flashrank`) (required if RERANKERS_ENABLED=TRUE)                                                                                                          |
 | TTS_SERVICE                | Text-to-Speech API provider for Podcasts (e.g., `local/kokoro`, `openai/tts-1`). See [supported providers](https://docs.litellm.ai/docs/text_to_speech#supported-providers)                            |
-| TTS_SERVICE_API_KEY        | API key for the Text-to-Speech service                                                                                                                                                    |
+| TTS_SERVICE_API_KEY        | (Optional if local) API key for the Text-to-Speech service                                                                                                                                                    |
 | TTS_SERVICE_API_BASE       | (Optional) Custom API base URL for the Text-to-Speech service                                                                                                                           |
-| STT_SERVICE                | Speech-to-Text API provider for Podcasts (e.g., `openai/whisper-1`). See [supported providers](https://docs.litellm.ai/docs/audio_transcription#supported-providers)                   |
-| STT_SERVICE_API_KEY        | API key for the Speech-to-Text service                                                                                                                                                    |
+| STT_SERVICE                | Speech-to-Text API provider for Audio Files (e.g., `local/base`, `openai/whisper-1`). See [supported providers](https://docs.litellm.ai/docs/audio_transcription#supported-providers)                   |
+| STT_SERVICE_API_KEY        | (Optional if local) API key for the Speech-to-Text service                                                                                                                                                    |
 | STT_SERVICE_API_BASE       | (Optional) Custom API base URL for the Speech-to-Text service                                                                                                                      |
-| FIRECRAWL_API_KEY          | API key for Firecrawl service for web crawling                                                                                                                                            |
+| FIRECRAWL_API_KEY          | API key for Firecrawl service for web crawling                                                                                                                                          |
 | ETL_SERVICE                | Document parsing service: `UNSTRUCTURED` (supports 34+ formats), `LLAMACLOUD` (supports 50+ formats including legacy document types), or `DOCLING` (local processing, supports PDF, Office docs, images, HTML, CSV)                                                  |
 | UNSTRUCTURED_API_KEY       | API key for Unstructured.io service for document parsing (required if ETL_SERVICE=UNSTRUCTURED)                                                                                           |
 | LLAMA_CLOUD_API_KEY        | API key for LlamaCloud service for document parsing (required if ETL_SERVICE=LLAMACLOUD)                                                                                                  |
+| CELERY_BROKER_URL          | Redis connection URL for Celery broker (e.g., `redis://localhost:6379/0`)                                                                                                                |
+| CELERY_RESULT_BACKEND      | Redis connection URL for Celery result backend (e.g., `redis://localhost:6379/0`)                                                                                                        |
+| SCHEDULE_CHECKER_INTERVAL  | (Optional) How often to check for scheduled connector tasks. Format: `<number><unit>` where unit is `m` (minutes) or `h` (hours). Examples: `1m`, `5m`, `1h`, `2h` (default: `1m`)                  |
+| REGISTRATION_ENABLED       | (Optional) Enable or disable new user registration (e.g., `TRUE` or `FALSE`, default: `TRUE`)                                                                                                       |
 
 
 **Optional Backend LangSmith Observability:**
@@ -142,11 +153,13 @@ For more details, see the [Uvicorn documentation](https://www.uvicorn.org/#comma
 
 ### Frontend Environment Variables
 
-| ENV VARIABLE                    | DESCRIPTION                                                |
-| ------------------------------- | ---------------------------------------------------------- |
-| NEXT_PUBLIC_FASTAPI_BACKEND_URL | URL of the backend service (e.g., `http://localhost:8000`) |
-| NEXT_PUBLIC_FASTAPI_BACKEND_AUTH_TYPE | Same value as set in backend AUTH_TYPE i.e `GOOGLE` for OAuth with Google, `LOCAL` for email/password authentication  |
-| NEXT_PUBLIC_ETL_SERVICE         | Document parsing service (should match backend ETL_SERVICE): `UNSTRUCTURED`, `LLAMACLOUD`, or `DOCLING` - affects supported file formats in upload interface |
+**Important:** Frontend environment variables are now configured in the **Docker-Specific Environment Variables** section above since the Next.js application runs as a production build in Docker. The following `NEXT_PUBLIC_*` variables should be set in your root `.env` file:
+
+- `NEXT_PUBLIC_FASTAPI_BACKEND_URL` - URL of the backend service
+- `NEXT_PUBLIC_FASTAPI_BACKEND_AUTH_TYPE` - Authentication method (`LOCAL` or `GOOGLE`)
+- `NEXT_PUBLIC_ETL_SERVICE` - Document parsing service (should match backend `ETL_SERVICE`)
+
+These variables are embedded into the application during the Docker build process and affect the frontend's behavior and available features.
 
 2. **Build and Start Containers**
 
@@ -176,6 +189,22 @@ For more details, see the [Uvicorn documentation](https://www.uvicorn.org/#comma
    - Backend API: [http://localhost:8000](http://localhost:8000)
    - API Documentation: [http://localhost:8000/docs](http://localhost:8000/docs)
    - pgAdmin: [http://localhost:5050](http://localhost:5050)
+
+## Docker Services Overview
+
+The Docker setup includes several services that work together:
+
+- **Backend**: FastAPI application server
+- **Frontend**: Next.js web application
+- **PostgreSQL (db)**: Database with pgvector extension
+- **Redis**: Message broker for Celery
+- **Celery Worker**: Handles background tasks (document processing, indexing, etc.)
+- **Celery Beat**: Scheduler for periodic tasks (enables scheduled connector indexing)
+  - The schedule interval can be configured using the `SCHEDULE_CHECKER_INTERVAL` environment variable in your backend `.env` file
+  - Default: checks every minute for connectors that need indexing
+- **pgAdmin**: Database management interface
+
+All services start automatically with `docker compose up`. The Celery Beat service ensures that periodic indexing functionality works out of the box.
 
 ## Using pgAdmin
 

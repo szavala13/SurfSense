@@ -23,7 +23,7 @@ export const getConnectorTypeDisplay = (type: string): string => {
 	const typeMap: Record<string, string> = {
 		SERPER_API: "Serper API",
 		TAVILY_API: "Tavily API",
-		// Add other connector types here as needed
+		SEARXNG_API: "SearxNG",
 	};
 	return typeMap[type] || type;
 };
@@ -33,7 +33,7 @@ export const ConnectorService = {
 	// Create a new connector
 	async createConnector(data: CreateConnectorRequest): Promise<Connector> {
 		const response = await fetch(
-			`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/search-source-connectors/`,
+			`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/search-source-connectors`,
 			{
 				method: "POST",
 				headers: {
@@ -55,7 +55,7 @@ export const ConnectorService = {
 	// Get all connectors
 	async getConnectors(skip = 0, limit = 100): Promise<Connector[]> {
 		const response = await fetch(
-			`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/search-source-connectors/?skip=${skip}&limit=${limit}`,
+			`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/api/v1/search-source-connectors?skip=${skip}&limit=${limit}`,
 			{
 				headers: {
 					Authorization: `Bearer ${localStorage.getItem("surfsense_bearer_token")}`,

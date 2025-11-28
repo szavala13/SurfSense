@@ -1,19 +1,32 @@
 "use client";
+import { useAtom } from "jotai";
+import { Eye, EyeOff } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { loginMutationAtom } from "@/atoms/auth/auth-mutation.atoms";
 import { getAuthErrorDetails, isNetworkError, shouldRetry } from "@/lib/auth-errors";
+import { ValidationError } from "@/lib/error";
 
 export function LocalLoginForm() {
+	const t = useTranslations("auth");
+	const tCommon = useTranslations("common");
 	const [username, setUsername] = useState("");
 	const [password, setPassword] = useState("");
-	const [error, setError] = useState<string | null>(null);
-	const [errorTitle, setErrorTitle] = useState<string | null>(null);
-	const [isLoading, setIsLoading] = useState(false);
+	const [showPassword, setShowPassword] = useState(false);
+	const [error, setError] = useState<{
+		title: string | null;
+		message: string | null;
+	}>({
+		title: null,
+		message: null,
+	});
 	const [authType, setAuthType] = useState<string | null>(null);
 	const router = useRouter();
+	const [{ mutateAsync: login, isPending: isLoggingIn }] = useAtom(loginMutationAtom);
 
 	useEffect(() => {
 		// Get the auth type from environment variables
@@ -22,39 +35,20 @@ export function LocalLoginForm() {
 
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
-		setIsLoading(true);
-		setError(null); // Clear any previous errors
-		setErrorTitle(null);
+		setError({ title: null, message: null }); // Clear any previous errors
 
 		// Show loading toast
-		const loadingToast = toast.loading("Signing you in...");
+		const loadingToast = toast.loading(tCommon("loading"));
 
 		try {
-			// Create form data for the API request
-			const formData = new URLSearchParams();
-			formData.append("username", username);
-			formData.append("password", password);
-			formData.append("grant_type", "password");
-
-			const response = await fetch(
-				`${process.env.NEXT_PUBLIC_FASTAPI_BACKEND_URL}/auth/jwt/login`,
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/x-www-form-urlencoded",
-					},
-					body: formData.toString(),
-				}
-			);
-
-			const data = await response.json();
-
-			if (!response.ok) {
-				throw new Error(data.detail || `HTTP ${response.status}`);
-			}
+			const data = await login({
+				username,
+				password,
+				grant_type: "password",
+			});
 
 			// Success toast
-			toast.success("Login successful!", {
+			toast.success(t("login_success"), {
 				id: loadingToast,
 				description: "Redirecting to dashboard...",
 				duration: 2000,
@@ -65,6 +59,16 @@ export function LocalLoginForm() {
 				router.push(`/auth/callback?token=${data.access_token}`);
 			}, 500);
 		} catch (err) {
+			if (err instanceof ValidationError) {
+				setError({ title: err.name, message: err.message });
+				toast.error(err.name, {
+					id: loadingToast,
+					description: err.message,
+					duration: 6000,
+				});
+				return;
+			}
+
 			// Use auth-errors utility to get proper error details
 			let errorCode = "UNKNOWN_ERROR";
 
@@ -78,8 +82,10 @@ export function LocalLoginForm() {
 			const errorDetails = getAuthErrorDetails(errorCode);
 
 			// Set persistent error display
-			setErrorTitle(errorDetails.title);
-			setError(errorDetails.description);
+			setError({
+				title: errorDetails.title,
+				message: errorDetails.description,
+			});
 
 			// Show error toast with conditional retry action
 			const toastOptions: any = {
@@ -97,8 +103,6 @@ export function LocalLoginForm() {
 			}
 
 			toast.error(errorDetails.title, toastOptions);
-		} finally {
-			setIsLoading(false);
 		}
 	};
 
@@ -107,7 +111,7 @@ export function LocalLoginForm() {
 			<form onSubmit={handleSubmit} className="space-y-4">
 				{/* Error Display */}
 				<AnimatePresence>
-					{error && errorTitle && (
+					{error && error.title && (
 						<motion.div
 							initial={{ opacity: 0, y: -10, scale: 0.95 }}
 							animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -134,13 +138,12 @@ export function LocalLoginForm() {
 									<line x1="9" y1="9" x2="15" y2="15" />
 								</svg>
 								<div className="flex-1 min-w-0">
-									<p className="text-sm font-semibold mb-1">{errorTitle}</p>
-									<p className="text-sm text-red-700 dark:text-red-300">{error}</p>
+									<p className="text-sm font-semibold mb-1">{error.title}</p>
+									<p className="text-sm text-red-700 dark:text-red-300">{error.message}</p>
 								</div>
 								<button
 									onClick={() => {
-										setError(null);
-										setErrorTitle(null);
+										setError({ title: null, message: null });
 									}}
 									className="flex-shrink-0 text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-200 transition-colors"
 									aria-label="Dismiss error"
@@ -172,7 +175,7 @@ export function LocalLoginForm() {
 						htmlFor="email"
 						className="block text-sm font-medium text-gray-700 dark:text-gray-300"
 					>
-						Email
+						{t("email")}
 					</label>
 					<input
 						id="email"
@@ -181,11 +184,11 @@ export function LocalLoginForm() {
 						value={username}
 						onChange={(e) => setUsername(e.target.value)}
 						className={`mt-1 block w-full rounded-md border px-3 py-2 shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 dark:bg-gray-800 dark:text-white transition-colors ${
-							error
+							error.title
 								? "border-red-300 focus:border-red-500 focus:ring-red-500 dark:border-red-700"
 								: "border-gray-300 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-700"
 						}`}
-						disabled={isLoading}
+						disabled={isLoggingIn}
 					/>
 				</div>
 
@@ -194,41 +197,51 @@ export function LocalLoginForm() {
 						htmlFor="password"
 						className="block text-sm font-medium text-gray-700 dark:text-gray-300"
 					>
-						Password
+						{t("password")}
 					</label>
-					<input
-						id="password"
-						type="password"
-						required
-						value={password}
-						onChange={(e) => setPassword(e.target.value)}
-						className={`mt-1 block w-full rounded-md border px-3 py-2 shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 dark:bg-gray-800 dark:text-white transition-colors ${
-							error
-								? "border-red-300 focus:border-red-500 focus:ring-red-500 dark:border-red-700"
-								: "border-gray-300 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-700"
-						}`}
-						disabled={isLoading}
-					/>
+					<div className="relative">
+						<input
+							id="password"
+							type={showPassword ? "text" : "password"}
+							required
+							value={password}
+							onChange={(e) => setPassword(e.target.value)}
+							className={`mt-1 block w-full rounded-md border pr-10 px-3 py-2 shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 dark:bg-gray-800 dark:text-white transition-colors ${
+								error.title
+									? "border-red-300 focus:border-red-500 focus:ring-red-500 dark:border-red-700"
+									: "border-gray-300 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-700"
+							}`}
+							disabled={isLoggingIn}
+						/>
+						<button
+							type="button"
+							onClick={() => setShowPassword((prev) => !prev)}
+							className="absolute inset-y-0 right-0 flex items-center pr-3 mt-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+							aria-label={showPassword ? t("hide_password") : t("show_password")}
+						>
+							{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+						</button>
+					</div>
 				</div>
 
 				<button
 					type="submit"
-					disabled={isLoading}
+					disabled={isLoggingIn}
 					className="w-full rounded-md bg-blue-600 px-4 py-2 text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
 				>
-					{isLoading ? "Signing in..." : "Sign in"}
+					{isLoggingIn ? tCommon("loading") : t("sign_in")}
 				</button>
 			</form>
 
 			{authType === "LOCAL" && (
 				<div className="mt-4 text-center text-sm">
 					<p className="text-gray-600 dark:text-gray-400">
-						Don&apos;t have an account?{" "}
+						{t("dont_have_account")}{" "}
 						<Link
 							href="/register"
 							className="font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400"
 						>
-							Register here
+							{t("sign_up")}
 						</Link>
 					</p>
 				</div>

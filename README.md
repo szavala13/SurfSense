@@ -8,9 +8,14 @@
 </a>
 </div>
 
+<div align="center">
+
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+</div>
 
 # SurfSense
-While tools like NotebookLM and Perplexity are impressive and highly effective for conducting research on any topic/query, SurfSense elevates this capability by integrating with your personal knowledge base. It is a highly customizable AI research agent, connected to external sources such as Search Engines (Tavily, LinkUp), Slack, Linear, Jira, ClickUp, Confluence, Gmail, Notion, YouTube, GitHub, Discord, Airtable, Google Calendar, Luma and more to come.
+While tools like NotebookLM and Perplexity are impressive and highly effective for conducting research on any topic/query, SurfSense elevates this capability by integrating with your personal knowledge base. It is a highly customizable AI research agent, connected to external sources such as Search Engines (SearxNG, Tavily, LinkUp), Slack, Linear, Jira, ClickUp, Confluence, Gmail, Notion, YouTube, GitHub, Discord, Airtable, Google Calendar, Luma, Elasticsearch and more to come.
 
 <div align="center">
 <a href="https://trendshift.io/repositories/13606" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13606" alt="MODSetter%2FSurfSense | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
@@ -58,10 +63,10 @@ Open source and easy to deploy locally.
 - Supports all major Rerankers (Pinecode, Cohere, Flashrank etc)
 - Uses Hierarchical Indices (2 tiered RAG setup).
 - Utilizes Hybrid Search (Semantic + Full Text Search combined with Reciprocal Rank Fusion).
-- RAG as a Service API Backend.
 
 ### ℹ️ **External Sources**
 - Search Engines (Tavily, LinkUp)
+- SearxNG (self-hosted instances)
 - Slack
 - Linear
 - Jira
@@ -75,6 +80,7 @@ Open source and easy to deploy locally.
 - Airtable
 - Google Calendar
 - Luma
+- Elasticsearch
 - and more to come.....
 
 ## 📄 **Supported File Extensions**
@@ -135,26 +141,30 @@ Check out our public roadmap and contribute your ideas or feedback:
 
 **View the Roadmap:** [SurfSense Roadmap on GitHub Projects](https://github.com/users/MODSetter/projects/2)
 
+
 ## How to get started?
 
 ### Installation Options
 
-SurfSense provides two installation methods:
+SurfSense provides three options to get started:
 
-1. **[Docker Installation](https://www.surfsense.net/docs/docker-installation)** - The easiest way to get SurfSense up and running with all dependencies containerized.
+1. **[SurfSense Cloud](https://www.surfsense.com/login)** - The easiest way to try SurfSense without any setup.
+   - No installation required
+   - Instant access to all features
+   - Perfect for getting started quickly
+
+2. **[Docker Installation (Recommended for Self-Hosting)](https://www.surfsense.net/docs/docker-installation)** - Easy way to get SurfSense up and running with all dependencies containerized.
    - Includes pgAdmin for database management through a web UI
    - Supports environment variable customization via `.env` file
    - Flexible deployment options (full stack or core services only)
    - No need to manually edit configuration files between environments
-   - See [Docker Setup Guide](DOCKER_SETUP.md) for detailed instructions
-   - For deployment scenarios and options, see [Deployment Guide](DEPLOYMENT_GUIDE.md)
 
-2. **[Manual Installation (Recommended)](https://www.surfsense.net/docs/manual-installation)** - For users who prefer more control over their setup or need to customize their deployment.
+3. **[Manual Installation](https://www.surfsense.net/docs/manual-installation)** - For users who prefer more control over their setup or need to customize their deployment.
 
-Both installation guides include detailed OS-specific instructions for Windows, macOS, and Linux.
+Docker and manual installation guides include detailed OS-specific instructions for Windows, macOS, and Linux.
 
-Before installation, make sure to complete the [prerequisite setup steps](https://www.surfsense.net/docs/) including:
-- PGVector setup
+Before self-hosting installation, make sure to complete the [prerequisite setup steps](https://www.surfsense.net/docs/) including:
+- Auth setup
 - **File Processing ETL Service** (choose one):
   - Unstructured.io API key (supports 34+ formats)
   - LlamaIndex API key (enhanced parsing, supports 50+ formats)
@@ -218,6 +228,12 @@ Before installation, make sure to complete the [prerequisite setup steps](https:
 
 -  **pgvector**: PostgreSQL extension for efficient vector similarity operations
 
+-  **Redis**: In-memory data structure store used as message broker and result backend for Celery
+
+-  **Celery**: Distributed task queue for handling asynchronous background jobs (document processing, podcast generation, etc.)
+
+-  **Flower**: Real-time monitoring and administration tool for Celery task queues
+
 -  **Chonkie**: Advanced document chunking and embedding library
  - Uses `AutoEmbeddings` for flexible embedding model selection
  -  `LateChunker` for optimized document chunking based on embedding model's max sequence length
@@ -267,12 +283,6 @@ Before installation, make sure to complete the [prerequisite setup steps](https:
 ### **Extension** 
  Manifest v3 on Plasmo
 
-## Future Work
-- Add More Connectors.
-- Patch minor bugs.
-- Document Podcasts
-
-
 
 ## Contribute 
 
@@ -303,4 +313,3 @@ For detailed contribution guidelines, please see our [CONTRIBUTING.md](CONTRIBUT
 
 ---
 ---
-

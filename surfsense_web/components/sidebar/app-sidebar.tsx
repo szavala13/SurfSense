@@ -4,6 +4,7 @@ import {
 	AlertCircle,
 	BookOpen,
 	Cable,
+	Database,
 	ExternalLink,
 	FileStack,
 	FileText,
@@ -16,13 +17,17 @@ import {
 	SquareTerminal,
 	Trash2,
 	Undo2,
+	Users,
 } from "lucide-react";
+import Image from "next/image";
+import Link from "next/link";
 import { memo, useMemo } from "react";
 
 import { Logo } from "@/components/Logo";
 import { NavMain } from "@/components/sidebar/nav-main";
 import { NavProjects } from "@/components/sidebar/nav-projects";
 import { NavSecondary } from "@/components/sidebar/nav-secondary";
+import { PageUsageDisplay } from "@/components/sidebar/page-usage-display";
 import {
 	Sidebar,
 	SidebarContent,
@@ -37,6 +42,7 @@ import {
 export const iconMap: Record<string, LucideIcon> = {
 	BookOpen,
 	Cable,
+	Database,
 	FileStack,
 	Undo2,
 	MessageCircleMore,
@@ -49,6 +55,7 @@ export const iconMap: Record<string, LucideIcon> = {
 	Trash2,
 	Podcast,
 	FileText,
+	Users,
 };
 
 const defaultData = {
@@ -59,53 +66,27 @@ const defaultData = {
 	},
 	navMain: [
 		{
-			title: "Researcher",
+			title: "Chat",
 			url: "#",
 			icon: "SquareTerminal",
 			isActive: true,
 			items: [],
 		},
 		{
-			title: "Documents",
+			title: "Sources",
 			url: "#",
-			icon: "FileStack",
+			icon: "Database",
 			items: [
 				{
-					title: "Upload Documents",
+					title: "Add Sources",
 					url: "#",
 				},
 				{
 					title: "Manage Documents",
 					url: "#",
 				},
-			],
-		},
-		{
-			title: "Connectors",
-			url: "#",
-			icon: "Cable",
-			items: [
-				{
-					title: "Add Connector",
-					url: "#",
-				},
 				{
 					title: "Manage Connectors",
-					url: "#",
-				},
-			],
-		},
-		{
-			title: "Research Synthesizer's",
-			url: "#",
-			icon: "SquareLibrary",
-			items: [
-				{
-					title: "Podcast Creator",
-					url: "#",
-				},
-				{
-					title: "Presentation Creator",
 					url: "#",
 				},
 			],
@@ -173,6 +154,10 @@ interface AppSidebarProps extends React.ComponentProps<typeof Sidebar> {
 		email: string;
 		avatar: string;
 	};
+	pageUsage?: {
+		pagesUsed: number;
+		pagesLimit: number;
+	};
 }
 
 // Memoized AppSidebar component for better performance
@@ -180,6 +165,7 @@ export const AppSidebar = memo(function AppSidebar({
 	navMain = defaultData.navMain,
 	navSecondary = defaultData.navSecondary,
 	RecentChats = defaultData.RecentChats,
+	pageUsage,
 	...props
 }: AppSidebarProps) {
 	// Process navMain to resolve icon names to components
@@ -213,16 +199,22 @@ export const AppSidebar = memo(function AppSidebar({
 			<SidebarHeader>
 				<SidebarMenu>
 					<SidebarMenuItem>
-						<SidebarMenuButton size="lg" asChild aria-label="Go to home page">
-							<div>
+						<SidebarMenuButton asChild size="lg">
+							<Link href="/" className="flex items-center gap-2 w-full">
 								<div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
-									<Logo className="rounded-lg" />
+									<Image
+										src="/icon-128.png"
+										alt="SurfSense logo"
+										width={32}
+										height={32}
+										className="rounded-lg"
+									/>
 								</div>
 								<div className="grid flex-1 text-left text-sm leading-tight">
 									<span className="truncate font-medium">SurfSense</span>
-									<span className="truncate text-xs">beta v0.0.7</span>
+									<span className="truncate text-xs">beta v0.0.8</span>
 								</div>
-							</div>
+							</Link>
 						</SidebarMenuButton>
 					</SidebarMenuItem>
 				</SidebarMenu>
@@ -238,6 +230,9 @@ export const AppSidebar = memo(function AppSidebar({
 				)}
 			</SidebarContent>
 			<SidebarFooter>
+				{pageUsage && (
+					<PageUsageDisplay pagesUsed={pageUsage.pagesUsed} pagesLimit={pageUsage.pagesLimit} />
+				)}
 				<NavSecondary items={processedNavSecondary} className="mt-auto" />
 			</SidebarFooter>
 		</Sidebar>

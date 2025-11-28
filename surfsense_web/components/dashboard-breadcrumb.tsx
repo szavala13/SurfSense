@@ -1,7 +1,10 @@
 "use client";
 
+import { useAtomValue } from "jotai";
 import { usePathname } from "next/navigation";
-import React from "react";
+import { useTranslations } from "next-intl";
+import React, { useEffect } from "react";
+import { activeChatAtom } from "@/atoms/chats/chat-query.atoms";
 import {
 	Breadcrumb,
 	BreadcrumbItem,
@@ -10,6 +13,7 @@ import {
 	BreadcrumbPage,
 	BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
+import { useSearchSpace } from "@/hooks/use-search-space";
 
 interface BreadcrumbItemInterface {
 	label: string;
@@ -17,7 +21,18 @@ interface BreadcrumbItemInterface {
 }
 
 export function DashboardBreadcrumb() {
+	const t = useTranslations("breadcrumb");
 	const pathname = usePathname();
+	const { data: activeChatState } = useAtomValue(activeChatAtom);
+	// Extract search space ID and chat ID from pathname
+	const segments = pathname.split("/").filter(Boolean);
+	const searchSpaceId = segments[0] === "dashboard" && segments[1] ? segments[1] : null;
+
+	// Fetch search space details if we have an ID
+	const { searchSpace } = useSearchSpace({
+		searchSpaceId: searchSpaceId || "",
+		autoFetch: !!searchSpaceId,
+	});
 
 	// Parse the pathname to create breadcrumb items
 	const generateBreadcrumbs = (path: string): BreadcrumbItemInterface[] => {
@@ -25,11 +40,16 @@ export function DashboardBreadcrumb() {
 		const breadcrumbs: BreadcrumbItemInterface[] = [];
 
 		// Always start with Dashboard
-		breadcrumbs.push({ label: "Dashboard", href: "/dashboard" });
+		breadcrumbs.push({ label: t("dashboard"), href: "/dashboard" });
 
 		// Handle search space
 		if (segments[0] === "dashboard" && segments[1]) {
-			breadcrumbs.push({ label: `Search Space ${segments[1]}`, href: `/dashboard/${segments[1]}` });
+			// Use the actual search space name if available, otherwise fall back to the ID
+			const searchSpaceLabel = searchSpace?.name || `${t("search_space")} ${segments[1]}`;
+			breadcrumbs.push({
+				label: searchSpaceLabel,
+				href: `/dashboard/${segments[1]}`,
+			});
 
 			// Handle specific sections
 			if (segments[2]) {
@@ -38,12 +58,14 @@ export function DashboardBreadcrumb() {
 
 				// Map section names to more readable labels
 				const sectionLabels: Record<string, string> = {
-					researcher: "Researcher",
-					documents: "Documents",
-					connectors: "Connectors",
-					podcasts: "Podcasts",
-					logs: "Logs",
-					chats: "Chats",
+					researcher: t("researcher"),
+					documents: t("documents"),
+					connectors: t("connectors"),
+					sources: "Sources",
+					podcasts: t("podcasts"),
+					logs: t("logs"),
+					chats: t("chats"),
+					settings: t("settings"),
 				};
 
 				sectionLabel = sectionLabels[section] || sectionLabel;
@@ -53,20 +75,47 @@ export function DashboardBreadcrumb() {
 					const subSection = segments[3];
 					let subSectionLabel = subSection.charAt(0).toUpperCase() + subSection.slice(1);
 
+					// Handle sources sub-sections
+					if (section === "sources") {
+						const sourceLabels: Record<string, string> = {
+							add: "Add Sources",
+						};
+
+						const sourceLabel = sourceLabels[subSection] || subSectionLabel;
+						breadcrumbs.push({
+							label: "Sources",
+							href: `/dashboard/${segments[1]}/sources`,
+						});
+						breadcrumbs.push({ label: sourceLabel });
+						return breadcrumbs;
+					}
+
 					// Handle documents sub-sections
 					if (section === "documents") {
 						const documentLabels: Record<string, string> = {
-							upload: "Upload Documents",
-							youtube: "Add YouTube Videos",
-							webpage: "Add Webpages",
+							upload: t("upload_documents"),
+							youtube: t("add_youtube"),
+							webpage: t("add_webpages"),
 						};
 
 						const documentLabel = documentLabels[subSection] || subSectionLabel;
 						breadcrumbs.push({
-							label: "Documents",
+							label: t("documents"),
 							href: `/dashboard/${segments[1]}/documents`,
 						});
 						breadcrumbs.push({ label: documentLabel });
+						return breadcrumbs;
+					}
+
+					// Handle researcher sub-sections (chat IDs)
+					if (section === "researcher") {
+						// Use the actual chat title if available, otherwise fall back to the ID
+						const chatLabel = activeChatState?.chatDetails?.title || subSection;
+						breadcrumbs.push({
+							label: t("researcher"),
+							href: `/dashboard/${segments[1]}/researcher`,
+						});
+						breadcrumbs.push({ label: chatLabel });
 						return breadcrumbs;
 					}
 
@@ -88,6 +137,8 @@ export function DashboardBreadcrumb() {
 								"serper-api": "Serper API",
 								"linkup-api": "LinkUp API",
 								"luma-connector": "Luma",
+								"elasticsearch-connector": "Elasticsearch",
+								"webcrawler-connector": "Web Pages",
 							};
 
 							const connectorLabel = connectorLabels[connectorType] || connectorType;
@@ -104,13 +155,13 @@ export function DashboardBreadcrumb() {
 						}
 
 						const connectorLabels: Record<string, string> = {
-							add: "Add Connector",
-							manage: "Manage Connectors",
+							add: t("add_connector"),
+							manage: t("manage_connectors"),
 						};
 
 						const connectorLabel = connectorLabels[subSection] || subSectionLabel;
 						breadcrumbs.push({
-							label: "Connectors",
+							label: t("connectors"),
 							href: `/dashboard/${segments[1]}/connectors`,
 						});
 						breadcrumbs.push({ label: connectorLabel });
@@ -119,12 +170,12 @@ export function DashboardBreadcrumb() {
 
 					// Handle other sub-sections
 					const subSectionLabels: Record<string, string> = {
-						upload: "Upload Documents",
-						youtube: "Add YouTube Videos",
-						webpage: "Add Webpages",
-						add: "Add Connector",
-						edit: "Edit Connector",
-						manage: "Manage",
+						upload: t("upload_documents"),
+						youtube: t("add_youtube"),
+						webpage: t("add_webpages"),
+						add: t("add_connector"),
+						edit: t("edit_connector"),
+						manage: t("manage"),
 					};
 
 					subSectionLabel = subSectionLabels[subSection] || subSectionLabel;

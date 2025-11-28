@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import config
 from app.db import User, create_db_and_tables, get_async_session
@@ -18,7 +19,19 @@ async def lifespan(app: FastAPI):
     yield
 
 
+def registration_allowed():
+    if not config.REGISTRATION_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Registration is disabled"
+        )
+    return True
+
+
 app = FastAPI(lifespan=lifespan)
+
+# Add ProxyHeaders middleware FIRST to trust proxy headers (e.g., from Cloudflare)
+# This ensures FastAPI uses HTTPS in redirects when behind a proxy
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 # Add CORS middleware
 app.add_middleware(
@@ -36,6 +49,7 @@ app.include_router(
     fastapi_users.get_register_router(UserRead, UserCreate),
     prefix="/auth",
     tags=["auth"],
+    dependencies=[Depends(registration_allowed)],  # blocks registration when disabled
 )
 app.include_router(
     fastapi_users.get_reset_password_router(),
@@ -59,9 +73,20 @@ if config.AUTH_TYPE == "GOOGLE":
     app.include_router(
         fastapi_users.get_oauth_router(
             google_oauth_client, auth_backend, SECRET, is_verified_by_default=True
+        )
+        if not config.BACKEND_URL
+        else fastapi_users.get_oauth_router(
+            google_oauth_client,
+            auth_backend,
+            SECRET,
+            is_verified_by_default=True,
+            redirect_url=f"{config.BACKEND_URL}/auth/google/callback",
         ),
         prefix="/auth/google",
         tags=["auth"],
+        dependencies=[
+            Depends(registration_allowed)
+        ],  # blocks OAuth registration when disabled
     )
 
 app.include_router(crud_router, prefix="/api/v1", tags=["crud"])

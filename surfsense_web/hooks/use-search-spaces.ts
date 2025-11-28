@@ -8,7 +8,10 @@ interface SearchSpace {
 	name: string;
 	description: string;
 	created_at: string;
-	// Add other fields from your SearchSpaceRead model
+	citations_enabled: boolean;
+	qna_custom_instructions: string | null;
+	member_count: number;
+	is_owner: boolean;
 }
 
 export function useSearchSpaces() {

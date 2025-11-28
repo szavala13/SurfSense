@@ -1,6 +1,7 @@
 import {
 	IconBook,
 	IconBrandDiscord,
+	IconBrandElastic,
 	IconBrandGithub,
 	IconBrandNotion,
 	IconBrandSlack,
@@ -32,6 +33,10 @@ export const getConnectorIcon = (connectorType: EnumConnectorName | string, clas
 			return <Link {...iconProps} />;
 		case EnumConnectorName.TAVILY_API:
 			return <IconWorldWww {...iconProps} />;
+		case EnumConnectorName.SEARXNG_API:
+			return <Globe {...iconProps} />;
+		case EnumConnectorName.BAIDU_SEARCH_API:
+			return <Search {...iconProps} />;
 		case EnumConnectorName.SLACK_CONNECTOR:
 			return <IconBrandSlack {...iconProps} />;
 		case EnumConnectorName.NOTION_CONNECTOR:
@@ -52,11 +57,15 @@ export const getConnectorIcon = (connectorType: EnumConnectorName | string, clas
 			return <IconChecklist {...iconProps} />;
 		case EnumConnectorName.LUMA_CONNECTOR:
 			return <IconSparkles {...iconProps} />;
+		case EnumConnectorName.ELASTICSEARCH_CONNECTOR:
+			return <IconBrandElastic {...iconProps} />;
+		case EnumConnectorName.WEBCRAWLER_CONNECTOR:
+			return <Globe {...iconProps} />;
 		// Additional cases for non-enum connector types
-		case "YOUTUBE_VIDEO":
-			return <IconBrandYoutube {...iconProps} />;
 		case "CRAWLED_URL":
 			return <Globe {...iconProps} />;
+		case "YOUTUBE_VIDEO":
+			return <IconBrandYoutube {...iconProps} />;
 		case "FILE":
 			return <File {...iconProps} />;
 		case "EXTENSION":

@@ -3,6 +3,7 @@
 import { Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AnnouncementBanner } from "@/components/announcement-banner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface DashboardLayoutProps {
@@ -40,5 +41,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 		);
 	}
 
-	return <>{children}</>;
+	return (
+		<div className="h-full flex flex-col ">
+			<AnnouncementBanner />
+			<div className="flex-1 min-h-0">{children}</div>
+		</div>
+	);
 }

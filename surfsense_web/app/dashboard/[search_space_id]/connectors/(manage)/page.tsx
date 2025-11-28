@@ -1,9 +1,18 @@
 "use client";
 
 import { format } from "date-fns";
-import { Calendar as CalendarIcon, Edit, Plus, RefreshCw, Trash2 } from "lucide-react";
+import {
+	Calendar as CalendarIcon,
+	Clock,
+	Edit,
+	Loader2,
+	Plus,
+	RefreshCw,
+	Trash2,
+} from "lucide-react";
 import { motion } from "motion/react";
 import { useParams, useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -28,8 +37,17 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
 	Table,
 	TableBody,
@@ -44,27 +62,29 @@ import { getConnectorIcon } from "@/contracts/enums/connectorIcons";
 import { useSearchSourceConnectors } from "@/hooks/use-search-source-connectors";
 import { cn } from "@/lib/utils";
 
-// Helper function to format date with time
-const formatDateTime = (dateString: string | null): string => {
-	if (!dateString) return "Never";
-
-	const date = new Date(dateString);
-	return new Intl.DateTimeFormat("en-US", {
-		year: "numeric",
-		month: "short",
-		day: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-	}).format(date);
-};
-
 export default function ConnectorsPage() {
+	const t = useTranslations("connectors");
+	const tCommon = useTranslations("common");
+
+	// Helper function to format date with time
+	const formatDateTime = (dateString: string | null): string => {
+		if (!dateString) return t("never");
+
+		const date = new Date(dateString);
+		return new Intl.DateTimeFormat("en-US", {
+			year: "numeric",
+			month: "short",
+			day: "numeric",
+			hour: "2-digit",
+			minute: "2-digit",
+		}).format(date);
+	};
 	const router = useRouter();
 	const params = useParams();
 	const searchSpaceId = params.search_space_id as string;
 	const today = new Date();
 
-	const { connectors, isLoading, error, deleteConnector, indexConnector } =
+	const { connectors, isLoading, error, deleteConnector, indexConnector, updateConnector } =
 		useSearchSourceConnectors(false, parseInt(searchSpaceId));
 	const [connectorToDelete, setConnectorToDelete] = useState<number | null>(null);
 	const [indexingConnectorId, setIndexingConnectorId] = useState<number | null>(null);
@@ -75,12 +95,22 @@ export default function ConnectorsPage() {
 	const [startDate, setStartDate] = useState<Date | undefined>(undefined);
 	const [endDate, setEndDate] = useState<Date | undefined>(undefined);
 
+	// Periodic indexing state
+	const [periodicDialogOpen, setPeriodicDialogOpen] = useState(false);
+	const [selectedConnectorForPeriodic, setSelectedConnectorForPeriodic] = useState<number | null>(
+		null
+	);
+	const [periodicEnabled, setPeriodicEnabled] = useState(false);
+	const [frequencyMinutes, setFrequencyMinutes] = useState<string>("1440");
+	const [customFrequency, setCustomFrequency] = useState<string>("");
+	const [isSavingPeriodic, setIsSavingPeriodic] = useState(false);
+
 	useEffect(() => {
 		if (error) {
-			toast.error("Failed to load connectors");
+			toast.error(t("failed_load"));
 			console.error("Error fetching connectors:", error);
 		}
-	}, [error]);
+	}, [error, t]);
 
 	// Handle connector deletion
 	const handleDeleteConnector = async () => {
@@ -88,10 +118,10 @@ export default function ConnectorsPage() {
 
 		try {
 			await deleteConnector(connectorToDelete);
-			toast.success("Connector deleted successfully");
+			toast.success(t("delete_success"));
 		} catch (error) {
 			console.error("Error deleting connector:", error);
-			toast.error("Failed to delete connector");
+			toast.error(t("delete_failed"));
 		} finally {
 			setConnectorToDelete(null);
 		}
@@ -115,10 +145,10 @@ export default function ConnectorsPage() {
 			const endDateStr = endDate ? format(endDate, "yyyy-MM-dd") : undefined;
 
 			await indexConnector(selectedConnectorForIndexing, searchSpaceId, startDateStr, endDateStr);
-			toast.success("Connector content indexing started");
+			toast.success(t("indexing_started"));
 		} catch (error) {
 			console.error("Error indexing connector content:", error);
-			toast.error(error instanceof Error ? error.message : "Failed to index connector content");
+			toast.error(error instanceof Error ? error.message : t("indexing_failed"));
 		} finally {
 			setIndexingConnectorId(null);
 			setSelectedConnectorForIndexing(null);
@@ -132,13 +162,91 @@ export default function ConnectorsPage() {
 		setIndexingConnectorId(connectorId);
 		try {
 			await indexConnector(connectorId, searchSpaceId);
-			toast.success("Connector content indexing started");
+			toast.success(t("indexing_started"));
 		} catch (error) {
 			console.error("Error indexing connector content:", error);
-			toast.error(error instanceof Error ? error.message : "Failed to index connector content");
+			toast.error(error instanceof Error ? error.message : t("indexing_failed"));
 		} finally {
 			setIndexingConnectorId(null);
 		}
+	};
+
+	// Handle opening periodic indexing dialog
+	const handleOpenPeriodicDialog = (connectorId: number) => {
+		const connector = connectors.find((c) => c.id === connectorId);
+		if (!connector) return;
+
+		setSelectedConnectorForPeriodic(connectorId);
+		setPeriodicEnabled(connector.periodic_indexing_enabled);
+
+		if (connector.indexing_frequency_minutes) {
+			// Check if it's a preset value
+			const presetValues = ["15", "60", "360", "720", "1440", "10080"];
+			if (presetValues.includes(connector.indexing_frequency_minutes.toString())) {
+				setFrequencyMinutes(connector.indexing_frequency_minutes.toString());
+				setCustomFrequency("");
+			} else {
+				setFrequencyMinutes("custom");
+				setCustomFrequency(connector.indexing_frequency_minutes.toString());
+			}
+		} else {
+			setFrequencyMinutes("1440");
+			setCustomFrequency("");
+		}
+
+		setPeriodicDialogOpen(true);
+	};
+
+	// Handle saving periodic indexing configuration
+	const handleSavePeriodicIndexing = async () => {
+		if (selectedConnectorForPeriodic === null) return;
+
+		const connector = connectors.find((c) => c.id === selectedConnectorForPeriodic);
+		if (!connector) return;
+
+		setIsSavingPeriodic(true);
+		try {
+			// Determine the frequency value
+			let frequency: number | null = null;
+			if (periodicEnabled) {
+				if (frequencyMinutes === "custom") {
+					frequency = parseInt(customFrequency, 10);
+					if (isNaN(frequency) || frequency <= 0) {
+						toast.error("Please enter a valid frequency in minutes");
+						setIsSavingPeriodic(false);
+						return;
+					}
+				} else {
+					frequency = parseInt(frequencyMinutes, 10);
+				}
+			}
+
+			await updateConnector(selectedConnectorForPeriodic, {
+				periodic_indexing_enabled: periodicEnabled,
+				indexing_frequency_minutes: frequency,
+			});
+
+			toast.success(
+				periodicEnabled
+					? "Periodic indexing enabled successfully"
+					: "Periodic indexing disabled successfully"
+			);
+			setPeriodicDialogOpen(false);
+		} catch (error) {
+			console.error("Error updating periodic indexing:", error);
+			toast.error(error instanceof Error ? error.message : "Failed to update periodic indexing");
+		} finally {
+			setIsSavingPeriodic(false);
+			setSelectedConnectorForPeriodic(null);
+		}
+	};
+
+	// Format frequency for display
+	const formatFrequency = (minutes: number): string => {
+		if (minutes < 60) return `${minutes}m`;
+		if (minutes < 1440) return `${Math.floor(minutes / 60)}h`;
+		if (minutes < 10080) return `${Math.floor(minutes / 1440)}d`;
+		return `${Math.floor(minutes / 10080)}w`;
 	};
 
 	return (
@@ -150,21 +258,19 @@ export default function ConnectorsPage() {
 				className="mb-8 flex items-center justify-between"
 			>
 				<div>
-					<h1 className="text-3xl font-bold tracking-tight">Connectors</h1>
-					<p className="text-muted-foreground mt-2">
-						Manage your connected services and data sources.
-					</p>
+					<h1 className="text-3xl font-bold tracking-tight">{t("title")}</h1>
+					<p className="text-muted-foreground mt-2">{t("subtitle")}</p>
 				</div>
 				<Button onClick={() => router.push(`/dashboard/${searchSpaceId}/connectors/add`)}>
 					<Plus className="mr-2 h-4 w-4" />
-					Add Connector
+					{t("add_connector")}
 				</Button>
 			</motion.div>
 
 			<Card>
 				<CardHeader className="pb-3">
-					<CardTitle>Your Connectors</CardTitle>
-					<CardDescription>View and manage all your connected services.</CardDescription>
+					<CardTitle>{t("your_connectors")}</CardTitle>
+					<CardDescription>{t("view_manage")}</CardDescription>
 				</CardHeader>
 				<CardContent>
 					{isLoading ? (
@@ -176,13 +282,11 @@ export default function ConnectorsPage() {
 						</div>
 					) : connectors.length === 0 ? (
 						<div className="text-center py-12">
-							<h3 className="text-lg font-medium mb-2">No connectors found</h3>
-							<p className="text-muted-foreground mb-6">
-								You haven't added any connectors yet. Add one to enhance your search capabilities.
-							</p>
+							<h3 className="text-lg font-medium mb-2">{t("no_connectors")}</h3>
+							<p className="text-muted-foreground mb-6">{t("no_connectors_desc")}</p>
 							<Button onClick={() => router.push(`/dashboard/${searchSpaceId}/connectors/add`)}>
 								<Plus className="mr-2 h-4 w-4" />
-								Add Your First Connector
+								{t("add_first")}
 							</Button>
 						</div>
 					) : (
@@ -190,10 +294,11 @@ export default function ConnectorsPage() {
 							<Table>
 								<TableHeader>
 									<TableRow>
-										<TableHead>Name</TableHead>
-										<TableHead>Type</TableHead>
-										<TableHead>Last Indexed</TableHead>
-										<TableHead className="text-right">Actions</TableHead>
+										<TableHead>{t("name")}</TableHead>
+										<TableHead>{t("type")}</TableHead>
+										<TableHead>{t("last_indexed")}</TableHead>
+										<TableHead>{t("periodic")}</TableHead>
+										<TableHead className="text-right">{t("actions")}</TableHead>
 									</TableRow>
 								</TableHeader>
 								<TableBody>
@@ -204,7 +309,42 @@ export default function ConnectorsPage() {
 											<TableCell>
 												{connector.is_indexable
 													? formatDateTime(connector.last_indexed_at)
-													: "Not indexable"}
+													: t("not_indexable")}
+											</TableCell>
+											<TableCell>
+												{connector.is_indexable ? (
+													connector.periodic_indexing_enabled ? (
+														<TooltipProvider>
+															<Tooltip>
+																<TooltipTrigger asChild>
+																	<div className="flex items-center gap-1 text-green-600 dark:text-green-400">
+																		<Clock className="h-4 w-4" />
+																		<span className="text-sm font-medium">
+																			{connector.indexing_frequency_minutes
+																				? formatFrequency(connector.indexing_frequency_minutes)
+																				: "Enabled"}
+																		</span>
+																	</div>
+																</TooltipTrigger>
+																<TooltipContent>
+																	<p>
+																		Runs every {connector.indexing_frequency_minutes} minutes
+																		{connector.next_scheduled_at && (
+																			<>
+																				<br />
+																				Next: {formatDateTime(connector.next_scheduled_at)}
+																			</>
+																		)}
+																	</p>
+																</TooltipContent>
+															</Tooltip>
+														</TooltipProvider>
+													) : (
+														<span className="text-sm text-muted-foreground">Disabled</span>
+													)
+												) : (
+													<span className="text-sm text-muted-foreground">-</span>
+												)}
 											</TableCell>
 											<TableCell className="text-right">
 												<div className="flex justify-end gap-2">
@@ -224,11 +364,11 @@ export default function ConnectorsPage() {
 																			) : (
 																				<CalendarIcon className="h-4 w-4" />
 																			)}
-																			<span className="sr-only">Index with Date Range</span>
+																			<span className="sr-only">{t("index_date_range")}</span>
 																		</Button>
 																	</TooltipTrigger>
 																	<TooltipContent>
-																		<p>Index with Date Range</p>
+																		<p>{t("index_date_range")}</p>
 																	</TooltipContent>
 																</Tooltip>
 															</TooltipProvider>
@@ -246,15 +386,34 @@ export default function ConnectorsPage() {
 																			) : (
 																				<RefreshCw className="h-4 w-4" />
 																			)}
-																			<span className="sr-only">Quick Index</span>
+																			<span className="sr-only">{t("quick_index")}</span>
 																		</Button>
 																	</TooltipTrigger>
 																	<TooltipContent>
-																		<p>Quick Index (Auto Date Range)</p>
+																		<p>{t("quick_index_auto")}</p>
 																	</TooltipContent>
 																</Tooltip>
 															</TooltipProvider>
 														</div>
+													)}
+													{connector.is_indexable && (
+														<TooltipProvider>
+															<Tooltip>
+																<TooltipTrigger asChild>
+																	<Button
+																		variant="outline"
+																		size="sm"
+																		onClick={() => handleOpenPeriodicDialog(connector.id)}
+																	>
+																		<Clock className="h-4 w-4" />
+																		<span className="sr-only">Configure Periodic Indexing</span>
+																	</Button>
+																</TooltipTrigger>
+																<TooltipContent>
+																	<p>Configure Periodic Indexing</p>
+																</TooltipContent>
+															</Tooltip>
+														</TooltipProvider>
 													)}
 													<Button
 														variant="outline"
@@ -266,7 +425,7 @@ export default function ConnectorsPage() {
 														}
 													>
 														<Edit className="h-4 w-4" />
-														<span className="sr-only">Edit</span>
+														<span className="sr-only">{tCommon("edit")}</span>
 													</Button>
 													<AlertDialog>
 														<AlertDialogTrigger asChild>
@@ -277,26 +436,25 @@ export default function ConnectorsPage() {
 																onClick={() => setConnectorToDelete(connector.id)}
 															>
 																<Trash2 className="h-4 w-4" />
-																<span className="sr-only">Delete</span>
+																<span className="sr-only">{tCommon("delete")}</span>
 															</Button>
 														</AlertDialogTrigger>
 														<AlertDialogContent>
 															<AlertDialogHeader>
-																<AlertDialogTitle>Delete Connector</AlertDialogTitle>
+																<AlertDialogTitle>{t("delete_connector")}</AlertDialogTitle>
 																<AlertDialogDescription>
-																	Are you sure you want to delete this connector? This action cannot
-																	be undone.
+																	{t("delete_confirm")}
 																</AlertDialogDescription>
 															</AlertDialogHeader>
 															<AlertDialogFooter>
 																<AlertDialogCancel onClick={() => setConnectorToDelete(null)}>
-																	Cancel
+																	{tCommon("cancel")}
 																</AlertDialogCancel>
 																<AlertDialogAction
 																	className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
 																	onClick={handleDeleteConnector}
 																>
-																	Delete
+																	{tCommon("delete")}
 																</AlertDialogAction>
 															</AlertDialogFooter>
 														</AlertDialogContent>
@@ -316,15 +474,13 @@ export default function ConnectorsPage() {
 			<Dialog open={datePickerOpen} onOpenChange={setDatePickerOpen}>
 				<DialogContent className="sm:max-w-[500px]">
 					<DialogHeader>
-						<DialogTitle>Select Date Range for Indexing</DialogTitle>
-						<DialogDescription>
-							Choose the start and end dates for indexing content. Leave empty to use default range.
-						</DialogDescription>
+						<DialogTitle>{t("select_date_range")}</DialogTitle>
+						<DialogDescription>{t("select_date_range_desc")}</DialogDescription>
 					</DialogHeader>
 					<div className="grid gap-4 py-4">
 						<div className="grid grid-cols-2 gap-4">
 							<div className="space-y-2">
-								<Label htmlFor="start-date">Start Date</Label>
+								<Label htmlFor="start-date">{t("start_date")}</Label>
 								<Popover>
 									<PopoverTrigger asChild>
 										<Button
@@ -336,7 +492,7 @@ export default function ConnectorsPage() {
 											)}
 										>
 											<CalendarIcon className="mr-2 h-4 w-4" />
-											{startDate ? format(startDate, "PPP") : "Pick a date"}
+											{startDate ? format(startDate, "PPP") : t("pick_date")}
 										</Button>
 									</PopoverTrigger>
 									<PopoverContent className="w-auto p-0" align="start">
@@ -350,7 +506,7 @@ export default function ConnectorsPage() {
 								</Popover>
 							</div>
 							<div className="space-y-2">
-								<Label htmlFor="end-date">End Date</Label>
+								<Label htmlFor="end-date">{t("end_date")}</Label>
 								<Popover>
 									<PopoverTrigger asChild>
 										<Button
@@ -362,7 +518,7 @@ export default function ConnectorsPage() {
 											)}
 										>
 											<CalendarIcon className="mr-2 h-4 w-4" />
-											{endDate ? format(endDate, "PPP") : "Pick a date"}
+											{endDate ? format(endDate, "PPP") : t("pick_date")}
 										</Button>
 									</PopoverTrigger>
 									<PopoverContent className="w-auto p-0" align="start">
@@ -380,7 +536,7 @@ export default function ConnectorsPage() {
 									setEndDate(undefined);
 								}}
 							>
-								Clear Dates
+								{t("clear_dates")}
 							</Button>
 							<Button
 								variant="outline"
@@ -392,7 +548,7 @@ export default function ConnectorsPage() {
 									setEndDate(today);
 								}}
 							>
-								Last 30 Days
+								{t("last_30_days")}
 							</Button>
 							<Button
 								variant="outline"
@@ -404,7 +560,7 @@ export default function ConnectorsPage() {
 									setEndDate(today);
 								}}
 							>
-								Last Year
+								{t("last_year")}
 							</Button>
 						</div>
 					</div>
@@ -418,9 +574,113 @@ export default function ConnectorsPage() {
 								setEndDate(undefined);
 							}}
 						>
+							{tCommon("cancel")}
+						</Button>
+						<Button onClick={handleIndexConnector}>{t("start_indexing")}</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+
+			{/* Periodic Indexing Configuration Dialog */}
+			<Dialog open={periodicDialogOpen} onOpenChange={setPeriodicDialogOpen}>
+				<DialogContent className="sm:max-w-[500px]">
+					<DialogHeader>
+						<DialogTitle>Configure Periodic Indexing</DialogTitle>
+						<DialogDescription>
+							Set up automatic indexing at regular intervals for this connector.
+						</DialogDescription>
+					</DialogHeader>
+					<div className="grid gap-6 py-4">
+						<div className="flex items-center justify-between space-x-2">
+							<div className="space-y-0.5">
+								<Label htmlFor="periodic-enabled" className="text-base">
+									Enable Periodic Indexing
+								</Label>
+								<p className="text-sm text-muted-foreground">
+									Automatically index this connector at regular intervals
+								</p>
+							</div>
+							<Switch
+								id="periodic-enabled"
+								checked={periodicEnabled}
+								onCheckedChange={setPeriodicEnabled}
+							/>
+						</div>
+
+						{periodicEnabled && (
+							<div className="space-y-4">
+								<div className="space-y-2">
+									<Label htmlFor="frequency">Indexing Frequency</Label>
+									<Select value={frequencyMinutes} onValueChange={setFrequencyMinutes}>
+										<SelectTrigger id="frequency">
+											<SelectValue placeholder="Select frequency" />
+										</SelectTrigger>
+										<SelectContent>
+											<SelectItem value="15">Every 15 minutes</SelectItem>
+											<SelectItem value="60">Every hour</SelectItem>
+											<SelectItem value="360">Every 6 hours</SelectItem>
+											<SelectItem value="720">Every 12 hours</SelectItem>
+											<SelectItem value="1440">Daily (24 hours)</SelectItem>
+											<SelectItem value="10080">Weekly (7 days)</SelectItem>
+											<SelectItem value="custom">Custom</SelectItem>
+										</SelectContent>
+									</Select>
+								</div>
+
+								{frequencyMinutes === "custom" && (
+									<div className="space-y-2">
+										<Label htmlFor="custom-frequency">Custom Frequency (minutes)</Label>
+										<Input
+											id="custom-frequency"
+											type="number"
+											min="1"
+											placeholder="Enter minutes"
+											value={customFrequency}
+											onChange={(e) => setCustomFrequency(e.target.value)}
+										/>
+										<p className="text-xs text-muted-foreground">
+											Enter the number of minutes between each indexing run
+										</p>
+									</div>
+								)}
+
+								<div className="rounded-lg bg-muted p-3 text-sm">
+									<p className="font-medium mb-1">Preview:</p>
+									<p className="text-muted-foreground">
+										{frequencyMinutes === "custom" && customFrequency
+											? `Will run every ${customFrequency} minutes`
+											: frequencyMinutes === "15"
+												? "Will run every 15 minutes"
+												: frequencyMinutes === "60"
+													? "Will run every hour"
+													: frequencyMinutes === "360"
+														? "Will run every 6 hours"
+														: frequencyMinutes === "720"
+															? "Will run every 12 hours"
+															: frequencyMinutes === "1440"
+																? "Will run daily (every 24 hours)"
+																: frequencyMinutes === "10080"
+																	? "Will run weekly (every 7 days)"
+																	: "Select a frequency above"}
+									</p>
+								</div>
+							</div>
+						)}
+					</div>
+					<DialogFooter>
+						<Button
+							variant="outline"
+							onClick={() => {
+								setPeriodicDialogOpen(false);
+								setSelectedConnectorForPeriodic(null);
+							}}
+						>
 							Cancel
 						</Button>
-						<Button onClick={handleIndexConnector}>Start Indexing</Button>
+						<Button onClick={handleSavePeriodicIndexing} disabled={isSavingPeriodic}>
+							{isSavingPeriodic && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+							Save Configuration
+						</Button>
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>

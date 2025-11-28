@@ -201,7 +201,7 @@ def validate_research_mode(research_mode: Any) -> str:
     if not normalized_mode:
         raise HTTPException(status_code=400, detail="research_mode cannot be empty")
 
-    valid_modes = ["REPORT_GENERAL", "REPORT_DEEP", "REPORT_DEEPER", "QNA"]
+    valid_modes = ["QNA"]
     if normalized_mode not in valid_modes:
         raise HTTPException(
             status_code=400,
@@ -239,6 +239,60 @@ def validate_search_mode(search_mode: Any) -> str:
             detail=f"search_mode must be one of: {', '.join(valid_modes)}",
         )
     return normalized_mode
+
+
+def validate_top_k(top_k: Any) -> int:
+    """
+    Validate and convert top_k to integer.
+
+    Args:
+        top_k: The top_k value to validate
+
+    Returns:
+        int: Validated top_k value (defaults to 10 if None)
+
+    Raises:
+        HTTPException: If validation fails
+    """
+    if top_k is None:
+        return 10  # Default value
+
+    if isinstance(top_k, bool):
+        raise HTTPException(
+            status_code=400, detail="top_k must be an integer, not a boolean"
+        )
+
+    if isinstance(top_k, int):
+        if top_k <= 0:
+            raise HTTPException(
+                status_code=400, detail="top_k must be a positive integer"
+            )
+        if top_k > 100:
+            raise HTTPException(status_code=400, detail="top_k must not exceed 100")
+        return top_k
+
+    if isinstance(top_k, str):
+        if not top_k.strip():
+            raise HTTPException(status_code=400, detail="top_k cannot be empty")
+
+        if not re.match(r"^[1-9]\d*$", top_k.strip()):
+            raise HTTPException(
+                status_code=400, detail="top_k must be a valid positive integer"
+            )
+
+        value = int(top_k.strip())
+        if value <= 0:
+            raise HTTPException(
+                status_code=400, detail="top_k must be a positive integer"
+            )
+        if value > 100:
+            raise HTTPException(status_code=400, detail="top_k must not exceed 100")
+        return value
+
+    raise HTTPException(
+        status_code=400,
+        detail="top_k must be an integer or string representation of an integer",
+    )
 
 
 def validate_messages(messages: Any) -> list[dict]:
@@ -295,13 +349,8 @@ def validate_messages(messages: Any) -> list[dict]:
                 status_code=400, detail=f"messages[{i}].content cannot be empty"
             )
 
-        # Trim content and enforce max length (10,000 chars)
+        # Trim content
         sanitized_content = content.strip()
-        if len(sanitized_content) > 10000:  # Reasonable limit
-            raise HTTPException(
-                status_code=400,
-                detail=f"messages[{i}].content is too long (max 10000 characters)",
-            )
 
         validated_messages.append({"role": role, "content": sanitized_content})
 
@@ -412,7 +461,7 @@ def validate_connector_config(
             raise ValueError(f"Invalid email format for {connector_name} connector")
 
     def validate_url_field(key: str, connector_name: str) -> None:
-        if not validators.url(config.get(key, "")):
+        if not validators.url(config.get(key, "").strip(), simple_host=True):
             raise ValueError(f"Invalid base URL format for {connector_name} connector")
 
     def validate_list_field(key: str, field_name: str) -> None:
@@ -420,11 +469,50 @@ def validate_connector_config(
         if not isinstance(value, list) or not value:
             raise ValueError(f"{field_name} must be a non-empty list of strings")
 
+    def validate_firecrawl_api_key_format() -> None:
+        """Validate Firecrawl API key format if provided."""
+        api_key = config.get("FIRECRAWL_API_KEY", "")
+        if api_key and api_key.strip() and not api_key.strip().startswith("fc-"):
+            raise ValueError(
+                "Firecrawl API key should start with 'fc-'. Please verify your API key."
+            )
+
+    def validate_initial_urls() -> None:
+        initial_urls = config.get("INITIAL_URLS", "")
+        if initial_urls and initial_urls.strip():
+            urls = [url.strip() for url in initial_urls.split("\n") if url.strip()]
+            for url in urls:
+                if not validators.url(url):
+                    raise ValueError(f"Invalid URL format in INITIAL_URLS: {url}")
+
     # Lookup table for connector validation rules
     connector_rules = {
         "SERPER_API": {"required": ["SERPER_API_KEY"], "validators": {}},
         "TAVILY_API": {"required": ["TAVILY_API_KEY"], "validators": {}},
+        "SEARXNG_API": {
+            "required": ["SEARXNG_HOST"],
+            "optional": [
+                "SEARXNG_API_KEY",
+                "SEARXNG_ENGINES",
+                "SEARXNG_CATEGORIES",
+                "SEARXNG_LANGUAGE",
+                "SEARXNG_SAFESEARCH",
+                "SEARXNG_VERIFY_SSL",
+            ],
+            "validators": {
+                "SEARXNG_HOST": lambda: validate_url_field("SEARXNG_HOST", "SearxNG")
+            },
+        },
         "LINKUP_API": {"required": ["LINKUP_API_KEY"], "validators": {}},
+        "BAIDU_SEARCH_API": {
+            "required": ["BAIDU_API_KEY"],
+            "optional": [
+                "BAIDU_MODEL",
+                "BAIDU_SEARCH_SOURCE",
+                "BAIDU_ENABLE_DEEP_SEARCH",
+            ],
+            "validators": {},
+        },
         "SLACK_CONNECTOR": {"required": ["SLACK_BOT_TOKEN"], "validators": {}},
         "NOTION_CONNECTOR": {
             "required": ["NOTION_INTEGRATION_TOKEN"],
@@ -478,16 +566,35 @@ def validate_connector_config(
         #     "validators": {}
         # },
         "LUMA_CONNECTOR": {"required": ["LUMA_API_KEY"], "validators": {}},
+        "WEBCRAWLER_CONNECTOR": {
+            "required": [],  # No required fields - API key is optional
+            "optional": ["FIRECRAWL_API_KEY", "INITIAL_URLS"],
+            "validators": {
+                "FIRECRAWL_API_KEY": lambda: validate_firecrawl_api_key_format(),
+                "INITIAL_URLS": lambda: validate_initial_urls(),
+            },
+        },
     }
 
     rules = connector_rules.get(connector_type_str)
     if not rules:
         return config  # Unknown connector type, pass through
 
-    # Validate required keys match exactly
-    if set(config.keys()) != set(rules["required"]):
+    required_keys = set(rules["required"])
+    optional_keys = set(rules.get("optional", []))
+    config_keys = set(config.keys())
+
+    # Validate that no unexpected keys are present
+    if not config_keys.issubset(required_keys | optional_keys):
+        allowed_keys = list(required_keys | optional_keys)
         raise ValueError(
-            f"For {connector_type_str} connector type, config must only contain these keys: {rules['required']}"
+            f"For {connector_type_str} connector type, config may only contain these keys: {allowed_keys}"
+        )
+
+    # Validate that all required keys are present
+    if not required_keys.issubset(config_keys):
+        raise ValueError(
+            f"For {connector_type_str} connector type, config must include these keys: {sorted(required_keys)}"
         )
 
     # Apply custom validators first (these check format before emptiness)

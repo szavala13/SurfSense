@@ -26,6 +26,9 @@ class LLMConfigBase(BaseModel):
     litellm_params: dict[str, Any] | None = Field(
         default=None, description="Additional LiteLLM parameters"
     )
+    language: str | None = Field(
+        default="English", max_length=50, description="Language for the LLM"
+    )
 
 
 class LLMConfigCreate(LLMConfigBase):
@@ -49,6 +52,9 @@ class LLMConfigUpdate(BaseModel):
     api_base: str | None = Field(
         None, max_length=500, description="Optional API base URL"
     )
+    language: str | None = Field(
+        None, max_length=50, description="Language for the LLM"
+    )
     litellm_params: dict[str, Any] | None = Field(
         None, description="Additional LiteLLM parameters"
     )
@@ -56,7 +62,11 @@ class LLMConfigUpdate(BaseModel):
 
 class LLMConfigRead(LLMConfigBase, IDModel, TimestampModel):
     id: int
-    created_at: datetime
-    search_space_id: int
+    created_at: datetime | None = Field(
+        None, description="Creation timestamp (None for global configs)"
+    )
+    search_space_id: int | None = Field(
+        None, description="Search space ID (None for global configs)"
+    )
 
     model_config = ConfigDict(from_attributes=True)

@@ -1,6 +1,8 @@
 import asyncio
 from typing import Any
+from urllib.parse import urljoin
 
+import httpx
 from linkup import LinkupClient
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,18 +15,17 @@ from app.db import (
     Document,
     SearchSourceConnector,
     SearchSourceConnectorType,
-    SearchSpace,
 )
 from app.retriver.chunks_hybrid_search import ChucksHybridSearchRetriever
 from app.retriver.documents_hybrid_search import DocumentHybridSearchRetriever
 
 
 class ConnectorService:
-    def __init__(self, session: AsyncSession, user_id: str | None = None):
+    def __init__(self, session: AsyncSession, search_space_id: int | None = None):
         self.session = session
         self.chunk_retriever = ChucksHybridSearchRetriever(session)
         self.document_retriever = DocumentHybridSearchRetriever(session)
-        self.user_id = user_id
+        self.search_space_id = search_space_id
         self.source_id_counter = (
             100000  # High starting value to avoid collisions with existing IDs
         )
@@ -34,23 +35,22 @@ class ConnectorService:
 
     async def initialize_counter(self):
         """
-        Initialize the source_id_counter based on the total number of chunks for the user.
+        Initialize the source_id_counter based on the total number of chunks for the search space.
         This ensures unique IDs across different sessions.
         """
-        if self.user_id:
+        if self.search_space_id:
             try:
-                # Count total chunks for documents belonging to this user
+                # Count total chunks for documents belonging to this search space
 
                 result = await self.session.execute(
                     select(func.count(Chunk.id))
                     .join(Document)
-                    .join(SearchSpace)
-                    .filter(SearchSpace.user_id == self.user_id)
+                    .filter(Document.search_space_id == self.search_space_id)
                 )
                 chunk_count = result.scalar() or 0
                 self.source_id_counter = chunk_count + 1
                 print(
-                    f"Initialized source_id_counter to {self.source_id_counter} for user {self.user_id}"
+                    f"Initialized source_id_counter to {self.source_id_counter} for search space {self.search_space_id}"
                 )
             except Exception as e:
                 print(f"Error initializing source_id_counter: {e!s}")
@@ -60,13 +60,18 @@ class ConnectorService:
     async def search_crawled_urls(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
     ) -> tuple:
         """
         Search for crawled URLs and return both the source information and langchain documents
+
+        Args:
+            user_query: The user's query
+            search_space_id: The search space ID to search in
+            top_k: Maximum number of results to return
+            search_mode: Search mode (CHUNKS or DOCUMENTS)
 
         Returns:
             tuple: (sources_info, langchain_documents)
@@ -75,7 +80,6 @@ class ConnectorService:
             crawled_urls_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="CRAWLED_URL",
             )
@@ -83,7 +87,6 @@ class ConnectorService:
             crawled_urls_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="CRAWLED_URL",
             )
@@ -107,15 +110,43 @@ class ConnectorService:
                 document = chunk.get("document", {})
                 metadata = document.get("metadata", {})
 
-                # Create a source entry
+                # Extract webcrawler-specific metadata
+                url = metadata.get("source", metadata.get("url", ""))
+                title = document.get(
+                    "title", metadata.get("title", "Untitled Document")
+                )
+                description = metadata.get("description", "")
+                language = metadata.get("language", "")
+                last_crawled_at = metadata.get("last_crawled_at", "")
+
+                # Build description with crawler info
+                content_preview = chunk.get("content", "")
+                if not description and content_preview:
+                    # Use content preview if no description
+                    description = content_preview[:200]
+                    if len(content_preview) > 200:
+                        description += "..."
+
+                # Add crawler metadata to description if available
+                info_parts = []
+                if language:
+                    info_parts.append(f"Language: {language}")
+                if last_crawled_at:
+                    info_parts.append(f"Last crawled: {last_crawled_at}")
+
+                if info_parts:
+                    if description:
+                        description += f" | {' | '.join(info_parts)}"
+                    else:
+                        description = " | ".join(info_parts)
+
                 source = {
                     "id": chunk.get("chunk_id", self.source_id_counter),
-                    "title": document.get("title", "Untitled Document"),
-                    "description": metadata.get(
-                        "og:description",
-                        metadata.get("ogDescription", chunk.get("content", "")[:100]),
-                    ),
-                    "url": metadata.get("url", ""),
+                    "title": title,
+                    "description": description,
+                    "url": url,
+                    "language": language,
+                    "last_crawled_at": last_crawled_at,
                 }
 
                 self.source_id_counter += 1
@@ -134,7 +165,6 @@ class ConnectorService:
     async def search_files(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -149,7 +179,6 @@ class ConnectorService:
             files_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="FILE",
             )
@@ -157,7 +186,6 @@ class ConnectorService:
             files_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="FILE",
             )
@@ -187,7 +215,7 @@ class ConnectorService:
                     "title": document.get("title", "Untitled Document"),
                     "description": metadata.get(
                         "og:description",
-                        metadata.get("ogDescription", chunk.get("content", "")[:100]),
+                        metadata.get("ogDescription", chunk.get("content", "")),
                     ),
                     "url": metadata.get("url", ""),
                 }
@@ -237,43 +265,35 @@ class ConnectorService:
 
     async def get_connector_by_type(
         self,
-        user_id: str,
         connector_type: SearchSourceConnectorType,
-        search_space_id: int | None = None,
+        search_space_id: int,
     ) -> SearchSourceConnector | None:
         """
-        Get a connector by type for a specific user and optionally a search space
+        Get a connector by type for a specific search space
 
         Args:
-            user_id: The user's ID
             connector_type: The connector type to retrieve
-            search_space_id: Optional search space ID to filter by
+            search_space_id: The search space ID to filter by
 
         Returns:
             Optional[SearchSourceConnector]: The connector if found, None otherwise
         """
         query = select(SearchSourceConnector).filter(
-            SearchSourceConnector.user_id == user_id,
+            SearchSourceConnector.search_space_id == search_space_id,
             SearchSourceConnector.connector_type == connector_type,
         )
-
-        if search_space_id is not None:
-            query = query.filter(
-                SearchSourceConnector.search_space_id == search_space_id
-            )
 
         result = await self.session.execute(query)
         return result.scalars().first()
 
     async def search_tavily(
-        self, user_query: str, user_id: str, search_space_id: int, top_k: int = 20
+        self, user_query: str, search_space_id: int, top_k: int = 20
     ) -> tuple:
         """
         Search using Tavily API and return both the source information and documents
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID
             top_k: Maximum number of results to return
 
@@ -282,7 +302,7 @@ class ConnectorService:
         """
         # Get Tavily connector configuration
         tavily_connector = await self.get_connector_by_type(
-            user_id, SearchSourceConnectorType.TAVILY_API, search_space_id
+            SearchSourceConnectorType.TAVILY_API, search_space_id
         )
 
         if not tavily_connector:
@@ -328,7 +348,7 @@ class ConnectorService:
                     source = {
                         "id": self.source_id_counter,
                         "title": result.get("title", "Tavily Result"),
-                        "description": result.get("content", "")[:100],
+                        "description": result.get("content", ""),
                         "url": result.get("url", ""),
                     }
                     sources_list.append(source)
@@ -372,10 +392,418 @@ class ConnectorService:
                 "sources": [],
             }, []
 
+    async def search_searxng(
+        self,
+        user_query: str,
+        search_space_id: int,
+        top_k: int = 20,
+    ) -> tuple:
+        """
+        Search using a configured SearxNG instance and return both sources and documents.
+        """
+        searx_connector = await self.get_connector_by_type(
+            SearchSourceConnectorType.SEARXNG_API, search_space_id
+        )
+
+        if not searx_connector:
+            return {
+                "id": 11,
+                "name": "SearxNG Search",
+                "type": "SEARXNG_API",
+                "sources": [],
+            }, []
+
+        config = searx_connector.config or {}
+        host = config.get("SEARXNG_HOST")
+
+        if not host:
+            print("SearxNG connector is missing SEARXNG_HOST configuration")
+            return {
+                "id": 11,
+                "name": "SearxNG Search",
+                "type": "SEARXNG_API",
+                "sources": [],
+            }, []
+
+        api_key = config.get("SEARXNG_API_KEY")
+        engines = config.get("SEARXNG_ENGINES")
+        categories = config.get("SEARXNG_CATEGORIES")
+        language = config.get("SEARXNG_LANGUAGE")
+        safesearch = config.get("SEARXNG_SAFESEARCH")
+
+        def _parse_bool(value: Any, default: bool = True) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"true", "1", "yes", "on"}:
+                    return True
+                if lowered in {"false", "0", "no", "off"}:
+                    return False
+            return default
+
+        verify_ssl = _parse_bool(config.get("SEARXNG_VERIFY_SSL", True))
+
+        safesearch_value: int | None = None
+        if isinstance(safesearch, str):
+            safesearch_clean = safesearch.strip()
+            if safesearch_clean.isdigit():
+                safesearch_value = int(safesearch_clean)
+        elif isinstance(safesearch, int | float):
+            safesearch_value = int(safesearch)
+
+        if safesearch_value is not None and not (0 <= safesearch_value <= 2):
+            safesearch_value = None
+
+        def _format_list(value: Any) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                value = value.strip()
+                return value or None
+            if isinstance(value, list | tuple | set):
+                cleaned = [str(item).strip() for item in value if str(item).strip()]
+                return ",".join(cleaned) if cleaned else None
+            return str(value)
+
+        params: dict[str, Any] = {
+            "q": user_query,
+            "format": "json",
+            "language": language or "",
+            "limit": max(1, min(top_k, 50)),
+        }
+
+        engines_param = _format_list(engines)
+        if engines_param:
+            params["engines"] = engines_param
+
+        categories_param = _format_list(categories)
+        if categories_param:
+            params["categories"] = categories_param
+
+        if safesearch_value is not None:
+            params["safesearch"] = safesearch_value
+
+        if not params.get("language"):
+            params.pop("language")
+
+        headers = {"Accept": "application/json"}
+        if api_key:
+            headers["X-API-KEY"] = api_key
+
+        searx_endpoint = urljoin(host if host.endswith("/") else f"{host}/", "search")
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0, verify=verify_ssl) as client:
+                response = await client.get(
+                    searx_endpoint,
+                    params=params,
+                    headers=headers,
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            print(f"Error searching with SearxNG: {exc!s}")
+            return {
+                "id": 11,
+                "name": "SearxNG Search",
+                "type": "SEARXNG_API",
+                "sources": [],
+            }, []
+
+        try:
+            data = response.json()
+        except ValueError:
+            print("Failed to decode JSON response from SearxNG")
+            return {
+                "id": 11,
+                "name": "SearxNG Search",
+                "type": "SEARXNG_API",
+                "sources": [],
+            }, []
+
+        searx_results = data.get("results", [])
+        if not searx_results:
+            return {
+                "id": 11,
+                "name": "SearxNG Search",
+                "type": "SEARXNG_API",
+                "sources": [],
+            }, []
+
+        sources_list: list[dict[str, Any]] = []
+        documents: list[dict[str, Any]] = []
+
+        async with self.counter_lock:
+            for result in searx_results:
+                description = result.get("content") or result.get("snippet") or ""
+                if len(description) > 160:
+                    description = f"{description}"
+
+                source = {
+                    "id": self.source_id_counter,
+                    "title": result.get("title", "SearxNG Result"),
+                    "description": description,
+                    "url": result.get("url", ""),
+                }
+                sources_list.append(source)
+
+                metadata = {
+                    "url": result.get("url", ""),
+                    "engines": result.get("engines", []),
+                    "category": result.get("category"),
+                    "source": "SEARXNG_API",
+                }
+
+                document = {
+                    "chunk_id": self.source_id_counter,
+                    "content": description or result.get("content", ""),
+                    "score": result.get("score", 0.0),
+                    "document": {
+                        "id": self.source_id_counter,
+                        "title": result.get("title", "SearxNG Result"),
+                        "document_type": "SEARXNG_API",
+                        "metadata": metadata,
+                    },
+                }
+                documents.append(document)
+                self.source_id_counter += 1
+
+        result_object = {
+            "id": 11,
+            "name": "SearxNG Search",
+            "type": "SEARXNG_API",
+            "sources": sources_list,
+        }
+
+        return result_object, documents
+
+    async def search_baidu(
+        self,
+        user_query: str,
+        search_space_id: int,
+        top_k: int = 20,
+    ) -> tuple:
+        """
+        Search using Baidu AI Search API and return both sources and documents.
+
+        Baidu AI Search provides intelligent search with automatic summarization.
+        We extract the raw search results (references) from the API response.
+
+        Args:
+            user_query: User's search query
+            search_space_id: Search space ID
+            top_k: Maximum number of results to return
+
+        Returns:
+            tuple: (sources_info_dict, documents_list)
+        """
+        # Get Baidu connector configuration
+        baidu_connector = await self.get_connector_by_type(
+            SearchSourceConnectorType.BAIDU_SEARCH_API, search_space_id
+        )
+
+        if not baidu_connector:
+            return {
+                "id": 12,
+                "name": "Baidu Search",
+                "type": "BAIDU_SEARCH_API",
+                "sources": [],
+            }, []
+
+        config = baidu_connector.config or {}
+        api_key = config.get("BAIDU_API_KEY")
+
+        if not api_key:
+            print("ERROR: Baidu connector is missing BAIDU_API_KEY configuration")
+            print(f"Connector config: {config}")
+            return {
+                "id": 12,
+                "name": "Baidu Search",
+                "type": "BAIDU_SEARCH_API",
+                "sources": [],
+            }, []
+
+        # Optional configuration parameters
+        model = config.get("BAIDU_MODEL", "ernie-3.5-8k")
+        search_source = config.get("BAIDU_SEARCH_SOURCE", "baidu_search_v2")
+        enable_deep_search = config.get("BAIDU_ENABLE_DEEP_SEARCH", False)
+
+        # Baidu AI Search API endpoint
+        baidu_endpoint = "https://qianfan.baidubce.com/v2/ai_search/chat/completions"
+
+        # Prepare request headers
+        # Note: Baidu uses X-Appbuilder-Authorization instead of standard Authorization header
+        headers = {
+            "X-Appbuilder-Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        # Prepare request payload
+        # Calculate resource_type_filter top_k values
+        # Baidu v2 supports max 20 per type
+        max_per_type = min(top_k, 20)
+
+        payload = {
+            "messages": [{"role": "user", "content": user_query}],
+            "model": model,
+            "search_source": search_source,
+            "resource_type_filter": [
+                {"type": "web", "top_k": max_per_type},
+                {"type": "video", "top_k": max(1, max_per_type // 4)},  # Fewer videos
+            ],
+            "stream": False,  # Non-streaming for simpler processing
+            "enable_deep_search": enable_deep_search,
+            "enable_corner_markers": True,  # Enable reference markers
+        }
+
+        try:
+            # Baidu AI Search may take longer as it performs search + summarization
+            # Increase timeout to 90 seconds
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                response = await client.post(
+                    baidu_endpoint,
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            print(f"ERROR: Baidu API request timeout after 90s: {exc!r}")
+            print(f"Endpoint: {baidu_endpoint}")
+            return {
+                "id": 12,
+                "name": "Baidu Search",
+                "type": "BAIDU_SEARCH_API",
+                "sources": [],
+            }, []
+        except httpx.HTTPStatusError as exc:
+            print(f"ERROR: Baidu API HTTP Status Error: {exc.response.status_code}")
+            print(f"Response text: {exc.response.text[:500]}")
+            print(f"Request URL: {exc.request.url}")
+            return {
+                "id": 12,
+                "name": "Baidu Search",
+                "type": "BAIDU_SEARCH_API",
+                "sources": [],
+            }, []
+        except httpx.RequestError as exc:
+            print(f"ERROR: Baidu API Request Error: {type(exc).__name__}: {exc!r}")
+            print(f"Endpoint: {baidu_endpoint}")
+            return {
+                "id": 12,
+                "name": "Baidu Search",
+                "type": "BAIDU_SEARCH_API",
+                "sources": [],
+            }, []
+        except Exception as exc:
+            print(
+                f"ERROR: Unexpected error calling Baidu API: {type(exc).__name__}: {exc!r}"
+            )
+            print(f"Endpoint: {baidu_endpoint}")
+            print(f"Payload: {payload}")
+            return {
+                "id": 12,
+                "name": "Baidu Search",
+                "type": "BAIDU_SEARCH_API",
+                "sources": [],
+            }, []
+
+        try:
+            data = response.json()
+        except ValueError as e:
+            print(f"ERROR: Failed to decode JSON response from Baidu AI Search: {e}")
+            print(f"Response status: {response.status_code}")
+            print(f"Response text: {response.text[:500]}")  # First 500 chars
+            return {
+                "id": 12,
+                "name": "Baidu Search",
+                "type": "BAIDU_SEARCH_API",
+                "sources": [],
+            }, []
+
+        # Extract references (search results) from the response
+        baidu_references = data.get("references", [])
+
+        if "code" in data or "message" in data:
+            print(
+                f"WARNING: Baidu API returned error - Code: {data.get('code')}, Message: {data.get('message')}"
+            )
+
+        if not baidu_references:
+            print("WARNING: No references found in Baidu API response")
+            print(f"Response keys: {list(data.keys())}")
+            return {
+                "id": 12,
+                "name": "Baidu Search",
+                "type": "BAIDU_SEARCH_API",
+                "sources": [],
+            }, []
+
+        sources_list: list[dict[str, Any]] = []
+        documents: list[dict[str, Any]] = []
+
+        async with self.counter_lock:
+            for reference in baidu_references:
+                # Extract basic fields
+                title = reference.get("title", "Baidu Search Result")
+                url = reference.get("url", "")
+                content = reference.get("content", "")
+                date = reference.get("date", "")
+                ref_type = reference.get("type", "web")  # web, image, video
+
+                # Create a source entry
+                source = {
+                    "id": self.source_id_counter,
+                    "title": title,
+                    "description": content[:300]
+                    if content
+                    else "",  # Limit description length
+                    "url": url,
+                }
+                sources_list.append(source)
+
+                # Prepare metadata
+                metadata = {
+                    "url": url,
+                    "date": date,
+                    "type": ref_type,
+                    "source": "BAIDU_SEARCH_API",
+                    "web_anchor": reference.get("web_anchor", ""),
+                    "website": reference.get("website", ""),
+                }
+
+                # Add type-specific metadata
+                if ref_type == "image" and reference.get("image"):
+                    metadata["image"] = reference["image"]
+                elif ref_type == "video" and reference.get("video"):
+                    metadata["video"] = reference["video"]
+
+                # Create a document entry
+                document = {
+                    "chunk_id": self.source_id_counter,
+                    "content": content,
+                    "score": 1.0,  # Baidu doesn't provide relevance scores
+                    "document": {
+                        "id": self.source_id_counter,
+                        "title": title,
+                        "document_type": "BAIDU_SEARCH_API",
+                        "metadata": metadata,
+                    },
+                }
+                documents.append(document)
+                self.source_id_counter += 1
+
+        result_object = {
+            "id": 12,
+            "name": "Baidu Search",
+            "type": "BAIDU_SEARCH_API",
+            "sources": sources_list,
+        }
+
+        return result_object, documents
+
     async def search_slack(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -390,7 +818,6 @@ class ConnectorService:
             slack_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="SLACK_CONNECTOR",
             )
@@ -398,7 +825,6 @@ class ConnectorService:
             slack_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="SLACK_CONNECTOR",
             )
@@ -433,9 +859,7 @@ class ConnectorService:
                     title += f" ({message_date})"
 
                 # Create a more descriptive description for Slack messages
-                description = chunk.get("content", "")[:100]
-                if len(description) == 100:
-                    description += "..."
+                description = chunk.get("content", "")
 
                 # For URL, we can use a placeholder or construct a URL to the Slack channel if available
                 url = ""
@@ -465,7 +889,6 @@ class ConnectorService:
     async def search_notion(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -475,7 +898,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
 
@@ -486,7 +908,6 @@ class ConnectorService:
             notion_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="NOTION_CONNECTOR",
             )
@@ -494,7 +915,6 @@ class ConnectorService:
             notion_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="NOTION_CONNECTOR",
             )
@@ -529,7 +949,7 @@ class ConnectorService:
                     title += f" (indexed: {indexed_at})"
 
                 # Create a more descriptive description for Notion pages
-                description = chunk.get("content", "")[:100]
+                description = chunk.get("content", "")
                 if len(description) == 100:
                     description += "..."
 
@@ -562,7 +982,6 @@ class ConnectorService:
     async def search_extension(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -572,7 +991,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
 
@@ -583,7 +1001,6 @@ class ConnectorService:
             extension_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="EXTENSION",
             )
@@ -591,7 +1008,6 @@ class ConnectorService:
             extension_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="EXTENSION",
             )
@@ -641,7 +1057,7 @@ class ConnectorService:
                         title += f" (visited: {visit_date})"
 
                 # Create a more descriptive description for extension data
-                description = chunk.get("content", "")[:100]
+                description = chunk.get("content", "")
                 if len(description) == 100:
                     description += "..."
 
@@ -683,7 +1099,6 @@ class ConnectorService:
     async def search_youtube(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -693,7 +1108,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
 
@@ -704,7 +1118,6 @@ class ConnectorService:
             youtube_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="YOUTUBE_VIDEO",
             )
@@ -712,7 +1125,6 @@ class ConnectorService:
             youtube_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="YOUTUBE_VIDEO",
             )
@@ -748,9 +1160,7 @@ class ConnectorService:
                     title += f" - {channel_name}"
 
                 # Create a more descriptive description for YouTube videos
-                description = metadata.get(
-                    "description", chunk.get("content", "")[:100]
-                )
+                description = metadata.get("description", chunk.get("content", ""))
                 if len(description) == 100:
                     description += "..."
 
@@ -782,7 +1192,6 @@ class ConnectorService:
     async def search_github(
         self,
         user_query: str,
-        user_id: int,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -797,7 +1206,6 @@ class ConnectorService:
             github_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="GITHUB_CONNECTOR",
             )
@@ -805,7 +1213,6 @@ class ConnectorService:
             github_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="GITHUB_CONNECTOR",
             )
@@ -836,7 +1243,7 @@ class ConnectorService:
                         "title", "GitHub Document"
                     ),  # Use specific title if available
                     "description": metadata.get(
-                        "description", chunk.get("content", "")[:100]
+                        "description", chunk.get("content", "")
                     ),  # Use description or content preview
                     "url": metadata.get("url", ""),  # Use URL if available in metadata
                 }
@@ -857,7 +1264,6 @@ class ConnectorService:
     async def search_linear(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -867,7 +1273,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
 
@@ -878,7 +1283,6 @@ class ConnectorService:
             linear_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="LINEAR_CONNECTOR",
             )
@@ -886,7 +1290,6 @@ class ConnectorService:
             linear_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="LINEAR_CONNECTOR",
             )
@@ -922,7 +1325,7 @@ class ConnectorService:
                     title += f" ({issue_state})"
 
                 # Create a more descriptive description for Linear issues
-                description = chunk.get("content", "")[:100]
+                description = chunk.get("content", "")
                 if len(description) == 100:
                     description += "..."
 
@@ -966,7 +1369,6 @@ class ConnectorService:
     async def search_jira(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -976,7 +1378,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
             search_mode: Search mode (CHUNKS or DOCUMENTS)
@@ -988,7 +1389,6 @@ class ConnectorService:
             jira_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="JIRA_CONNECTOR",
             )
@@ -996,7 +1396,6 @@ class ConnectorService:
             jira_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="JIRA_CONNECTOR",
             )
@@ -1034,7 +1433,7 @@ class ConnectorService:
                     title += f" ({status})"
 
                 # Create a more descriptive description for Jira issues
-                description = chunk.get("content", "")[:100]
+                description = chunk.get("content", "")
                 if len(description) == 100:
                     description += "..."
 
@@ -1087,7 +1486,6 @@ class ConnectorService:
     async def search_google_calendar(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -1097,7 +1495,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
             search_mode: Search mode (CHUNKS or DOCUMENTS)
@@ -1109,7 +1506,6 @@ class ConnectorService:
             calendar_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="GOOGLE_CALENDAR_CONNECTOR",
             )
@@ -1117,7 +1513,6 @@ class ConnectorService:
             calendar_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="GOOGLE_CALENDAR_CONNECTOR",
             )
@@ -1168,9 +1563,7 @@ class ConnectorService:
                         title += f" ({start_time})"
 
                 # Create a more descriptive description for calendar events
-                description = chunk.get("content", "")[:100]
-                if len(description) == 100:
-                    description += "..."
+                description = chunk.get("content", "")
 
                 # Add event info to description
                 info_parts = []
@@ -1222,7 +1615,6 @@ class ConnectorService:
     async def search_airtable(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -1232,7 +1624,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
             search_mode: Search mode (CHUNKS or DOCUMENTS)
@@ -1244,7 +1635,6 @@ class ConnectorService:
             airtable_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="AIRTABLE_CONNECTOR",
             )
@@ -1252,7 +1642,6 @@ class ConnectorService:
             airtable_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="AIRTABLE_CONNECTOR",
             )
@@ -1310,7 +1699,6 @@ class ConnectorService:
     async def search_google_gmail(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -1320,7 +1708,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
             search_mode: Search mode (CHUNKS or DOCUMENTS)
@@ -1332,7 +1719,6 @@ class ConnectorService:
             gmail_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="GOOGLE_GMAIL_CONNECTOR",
             )
@@ -1340,7 +1726,6 @@ class ConnectorService:
             gmail_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="GOOGLE_GMAIL_CONNECTOR",
             )
@@ -1385,9 +1770,7 @@ class ConnectorService:
                         title += f" (from {sender})"
 
                 # Create a more descriptive description for Gmail messages
-                description = chunk.get("content", "")[:150]
-                if len(description) == 150:
-                    description += "..."
+                description = chunk.get("content", "")
 
                 # Add message info to description
                 info_parts = []
@@ -1436,7 +1819,6 @@ class ConnectorService:
     async def search_confluence(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -1446,7 +1828,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
             search_mode: Search mode (CHUNKS or DOCUMENTS)
@@ -1458,7 +1839,6 @@ class ConnectorService:
             confluence_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="CONFLUENCE_CONNECTOR",
             )
@@ -1466,7 +1846,6 @@ class ConnectorService:
             confluence_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="CONFLUENCE_CONNECTOR",
             )
@@ -1501,9 +1880,7 @@ class ConnectorService:
                     title += f" ({space_key})"
 
                 # Create a more descriptive description for Confluence pages
-                description = chunk.get("content", "")[:100]
-                if len(description) == 100:
-                    description += "..."
+                description = chunk.get("content", "")
 
                 # For URL, we can use a placeholder or construct a URL to the Confluence page if available
                 url = ""  # TODO: Add base_url to metadata
@@ -1533,7 +1910,6 @@ class ConnectorService:
     async def search_clickup(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -1543,7 +1919,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
             search_mode: Search mode (CHUNKS or DOCUMENTS)
@@ -1555,7 +1930,6 @@ class ConnectorService:
             clickup_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="CLICKUP_CONNECTOR",
             )
@@ -1563,7 +1937,6 @@ class ConnectorService:
             clickup_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="CLICKUP_CONNECTOR",
             )
@@ -1649,7 +2022,6 @@ class ConnectorService:
     async def search_linkup(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         mode: str = "standard",
     ) -> tuple:
@@ -1658,7 +2030,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID
             mode: Search depth mode, can be "standard" or "deep"
 
@@ -1667,7 +2038,7 @@ class ConnectorService:
         """
         # Get Linkup connector configuration
         linkup_connector = await self.get_connector_by_type(
-            user_id, SearchSourceConnectorType.LINKUP_API, search_space_id
+            SearchSourceConnectorType.LINKUP_API, search_space_id
         )
 
         if not linkup_connector:
@@ -1720,7 +2091,7 @@ class ConnectorService:
                             result.name if hasattr(result, "name") else "Linkup Result"
                         ),
                         "description": (
-                            result.content[:100] if hasattr(result, "content") else ""
+                            result.content if hasattr(result, "content") else ""
                         ),
                         "url": result.url if hasattr(result, "url") else "",
                     }
@@ -1772,7 +2143,6 @@ class ConnectorService:
     async def search_discord(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -1782,7 +2152,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
 
@@ -1793,7 +2162,6 @@ class ConnectorService:
             discord_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="DISCORD_CONNECTOR",
             )
@@ -1801,7 +2169,6 @@ class ConnectorService:
             discord_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="DISCORD_CONNECTOR",
             )
@@ -1836,9 +2203,7 @@ class ConnectorService:
                     title += f" ({message_date})"
 
                 # Create a more descriptive description for Discord messages
-                description = chunk.get("content", "")[:100]
-                if len(description) == 100:
-                    description += "..."
+                description = chunk.get("content", "")
 
                 url = ""
                 guild_id = metadata.get("guild_id", "")
@@ -1871,7 +2236,6 @@ class ConnectorService:
     async def search_luma(
         self,
         user_query: str,
-        user_id: str,
         search_space_id: int,
         top_k: int = 20,
         search_mode: SearchMode = SearchMode.CHUNKS,
@@ -1881,7 +2245,6 @@ class ConnectorService:
 
         Args:
             user_query: The user's query
-            user_id: The user's ID
             search_space_id: The search space ID to search in
             top_k: Maximum number of results to return
             search_mode: Search mode (CHUNKS or DOCUMENTS)
@@ -1893,7 +2256,6 @@ class ConnectorService:
             luma_chunks = await self.chunk_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="LUMA_CONNECTOR",
             )
@@ -1901,7 +2263,6 @@ class ConnectorService:
             luma_chunks = await self.document_retriever.hybrid_search(
                 query_text=user_query,
                 top_k=top_k,
-                user_id=user_id,
                 search_space_id=search_space_id,
                 document_type="LUMA_CONNECTOR",
             )
@@ -1955,10 +2316,7 @@ class ConnectorService:
                     except Exception:
                         title += f" ({start_time})"
 
-                # Create a more descriptive description for Luma events
-                description = chunk.get("content", "")[:150]
-                if len(description) == 150:
-                    description += "..."
+                description = chunk.get("content", "")
 
                 # Add event info to description
                 info_parts = []
@@ -2028,3 +2386,113 @@ class ConnectorService:
         }
 
         return result_object, luma_chunks
+
+    async def search_elasticsearch(
+        self,
+        user_query: str,
+        search_space_id: int,
+        top_k: int = 20,
+        search_mode: SearchMode = SearchMode.CHUNKS,
+    ) -> tuple:
+        """
+        Search for Elasticsearch documents and return both the source information and langchain documents
+
+        Args:
+            user_query: The user's query
+            search_space_id: The search space ID to search in
+            top_k: Maximum number of results to return
+            search_mode: Search mode (CHUNKS or DOCUMENTS)
+
+        Returns:
+            tuple: (sources_info, langchain_documents)
+        """
+        if search_mode == SearchMode.CHUNKS:
+            elasticsearch_chunks = await self.chunk_retriever.hybrid_search(
+                query_text=user_query,
+                top_k=top_k,
+                search_space_id=search_space_id,
+                document_type="ELASTICSEARCH_CONNECTOR",
+            )
+        elif search_mode == SearchMode.DOCUMENTS:
+            elasticsearch_chunks = await self.document_retriever.hybrid_search(
+                query_text=user_query,
+                top_k=top_k,
+                search_space_id=search_space_id,
+                document_type="ELASTICSEARCH_CONNECTOR",
+            )
+            # Transform document retriever results to match expected format
+            elasticsearch_chunks = self._transform_document_results(
+                elasticsearch_chunks
+            )
+
+        # Early return if no results
+        if not elasticsearch_chunks:
+            return {
+                "id": 34,
+                "name": "Elasticsearch",
+                "type": "ELASTICSEARCH_CONNECTOR",
+                "sources": [],
+            }, []
+
+        # Process each chunk and create sources directly without deduplication
+        sources_list = []
+        async with self.counter_lock:
+            for _i, chunk in enumerate(elasticsearch_chunks):
+                # Extract document metadata
+                document = chunk.get("document", {})
+                metadata = document.get("metadata", {})
+
+                # Extract Elasticsearch-specific metadata
+                es_id = metadata.get("elasticsearch_id", "")
+                es_index = metadata.get("elasticsearch_index", "")
+                es_score = metadata.get("elasticsearch_score", "")
+
+                # Create a more descriptive title for Elasticsearch documents
+                title = document.get("title", "Elasticsearch Document")
+                if es_index:
+                    title = f"{title} (Index: {es_index})"
+
+                # Create a more descriptive description for Elasticsearch documents
+                description = chunk.get("content", "")[:150]
+                if len(description) == 150:
+                    description += "..."
+
+                # Add Elasticsearch info to description
+                info_parts = []
+                if es_id:
+                    info_parts.append(f"ID: {es_id}")
+                if es_score:
+                    info_parts.append(f"Score: {es_score}")
+
+                if info_parts:
+                    if description:
+                        description = f"{description} | {' | '.join(info_parts)}"
+                    else:
+                        description = " | ".join(info_parts)
+
+                # For URL, we could construct a URL to view the document if we have the Elasticsearch UI URL
+                url = ""
+                # Could be extended to include Kibana or other UI URLs if configured
+
+                source = {
+                    "id": chunk.get("chunk_id", self.source_id_counter),
+                    "title": title,
+                    "description": description,
+                    "url": url,
+                    "elasticsearch_id": es_id,
+                    "elasticsearch_index": es_index,
+                    "elasticsearch_score": es_score,
+                }
+
+                self.source_id_counter += 1
+                sources_list.append(source)
+
+        # Create result object
+        result_object = {
+            "id": 34,  # Assign a unique ID for the Elasticsearch connector
+            "name": "Elasticsearch",
+            "type": "ELASTICSEARCH_CONNECTOR",
+            "sources": sources_list,
+        }
+
+        return result_object, elasticsearch_chunks

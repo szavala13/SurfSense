@@ -11,10 +11,10 @@ Note: Each search space can have only one connector of each type per user (based
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,9 +22,9 @@ from sqlalchemy.future import select
 
 from app.connectors.github_connector import GitHubConnector
 from app.db import (
+    Permission,
     SearchSourceConnector,
     SearchSourceConnectorType,
-    SearchSpace,
     User,
     async_session_maker,
     get_async_session,
@@ -39,7 +39,9 @@ from app.tasks.connector_indexers import (
     index_airtable_records,
     index_clickup_tasks,
     index_confluence_pages,
+    index_crawled_urls,
     index_discord_messages,
+    index_elasticsearch_documents,
     index_github_repos,
     index_google_calendar_events,
     index_google_gmail_messages,
@@ -50,7 +52,12 @@ from app.tasks.connector_indexers import (
     index_slack_messages,
 )
 from app.users import current_active_user
-from app.utils.check_ownership import check_ownership
+from app.utils.periodic_scheduler import (
+    create_periodic_schedule,
+    delete_periodic_schedule,
+    update_periodic_schedule,
+)
+from app.utils.rbac import check_permission
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -64,7 +71,7 @@ class GitHubPATRequest(BaseModel):
 
 
 # --- New Endpoint to list GitHub Repositories ---
-@router.post("/github/repositories/", response_model=list[dict[str, Any]])
+@router.post("/github/repositories", response_model=list[dict[str, Any]])
 async def list_github_repositories(
     pat_request: GitHubPATRequest,
     user: User = Depends(current_active_user),  # Ensure the user is logged in
@@ -90,7 +97,7 @@ async def list_github_repositories(
         ) from e
 
 
-@router.post("/search-source-connectors/", response_model=SearchSourceConnectorRead)
+@router.post("/search-source-connectors", response_model=SearchSourceConnectorRead)
 async def create_search_source_connector(
     connector: SearchSourceConnectorCreate,
     search_space_id: int = Query(
@@ -101,19 +108,25 @@ async def create_search_source_connector(
 ):
     """
     Create a new search source connector.
+    Requires CONNECTORS_CREATE permission.
 
-    Each search space can have only one connector of each type per user (based on search_space_id, user_id, and connector_type).
+    Each search space can have only one connector of each type (based on search_space_id and connector_type).
     The config must contain the appropriate keys for the connector type.
     """
     try:
-        # Check if the search space belongs to the user
-        await check_ownership(session, SearchSpace, search_space_id, user)
+        # Check if user has permission to create connectors
+        await check_permission(
+            session,
+            user,
+            search_space_id,
+            Permission.CONNECTORS_CREATE.value,
+            "You don't have permission to create connectors in this search space",
+        )
 
-        # Check if a connector with the same type already exists for this search space and user
+        # Check if a connector with the same type already exists for this search space
         result = await session.execute(
             select(SearchSourceConnector).filter(
                 SearchSourceConnector.search_space_id == search_space_id,
-                SearchSourceConnector.user_id == user.id,
                 SearchSourceConnector.connector_type == connector.connector_type,
             )
         )
@@ -121,14 +134,46 @@ async def create_search_source_connector(
         if existing_connector:
             raise HTTPException(
                 status_code=409,
-                detail=f"A connector with type {connector.connector_type} already exists in this search space. Each search space can have only one connector of each type per user.",
+                detail=f"A connector with type {connector.connector_type} already exists in this search space.",
             )
+
+        # Prepare connector data
+        connector_data = connector.model_dump()
+
+        # Automatically set next_scheduled_at if periodic indexing is enabled
+        if (
+            connector.periodic_indexing_enabled
+            and connector.indexing_frequency_minutes
+            and connector.next_scheduled_at is None
+        ):
+            connector_data["next_scheduled_at"] = datetime.now(UTC) + timedelta(
+                minutes=connector.indexing_frequency_minutes
+            )
+
         db_connector = SearchSourceConnector(
-            **connector.model_dump(), search_space_id=search_space_id, user_id=user.id
+            **connector_data, search_space_id=search_space_id, user_id=user.id
         )
         session.add(db_connector)
         await session.commit()
         await session.refresh(db_connector)
+
+        # Create periodic schedule if periodic indexing is enabled
+        if (
+            db_connector.periodic_indexing_enabled
+            and db_connector.indexing_frequency_minutes
+        ):
+            success = create_periodic_schedule(
+                connector_id=db_connector.id,
+                search_space_id=search_space_id,
+                user_id=str(user.id),
+                connector_type=db_connector.connector_type,
+                frequency_minutes=db_connector.indexing_frequency_minutes,
+            )
+            if not success:
+                logger.warning(
+                    f"Failed to create periodic schedule for connector {db_connector.id}"
+                )
+
         return db_connector
     except ValidationError as e:
         await session.rollback()
@@ -151,9 +196,7 @@ async def create_search_source_connector(
         ) from e
 
 
-@router.get(
-    "/search-source-connectors/", response_model=list[SearchSourceConnectorRead]
-)
+@router.get("/search-source-connectors", response_model=list[SearchSourceConnectorRead])
 async def read_search_source_connectors(
     skip: int = 0,
     limit: int = 100,
@@ -161,22 +204,34 @@ async def read_search_source_connectors(
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
-    """List all search source connectors for the current user, optionally filtered by search space."""
+    """
+    List all search source connectors for a search space.
+    Requires CONNECTORS_READ permission.
+    """
     try:
-        query = select(SearchSourceConnector).filter(
-            SearchSourceConnector.user_id == user.id
+        if search_space_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="search_space_id is required",
+            )
+
+        # Check if user has permission to read connectors
+        await check_permission(
+            session,
+            user,
+            search_space_id,
+            Permission.CONNECTORS_READ.value,
+            "You don't have permission to view connectors in this search space",
         )
 
-        # Filter by search_space_id if provided
-        if search_space_id is not None:
-            # Verify the search space belongs to the user
-            await check_ownership(session, SearchSpace, search_space_id, user)
-            query = query.filter(
-                SearchSourceConnector.search_space_id == search_space_id
-            )
+        query = select(SearchSourceConnector).filter(
+            SearchSourceConnector.search_space_id == search_space_id
+        )
 
         result = await session.execute(query.offset(skip).limit(limit))
         return result.scalars().all()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -192,9 +247,32 @@ async def read_search_source_connector(
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
-    """Get a specific search source connector by ID."""
+    """
+    Get a specific search source connector by ID.
+    Requires CONNECTORS_READ permission.
+    """
     try:
-        return await check_ownership(session, SearchSourceConnector, connector_id, user)
+        # Get the connector first
+        result = await session.execute(
+            select(SearchSourceConnector).filter(
+                SearchSourceConnector.id == connector_id
+            )
+        )
+        connector = result.scalars().first()
+
+        if not connector:
+            raise HTTPException(status_code=404, detail="Connector not found")
+
+        # Check permission
+        await check_permission(
+            session,
+            user,
+            connector.search_space_id,
+            Permission.CONNECTORS_READ.value,
+            "You don't have permission to view this connector",
+        )
+
+        return connector
     except HTTPException:
         raise
     except Exception as e:
@@ -214,14 +292,73 @@ async def update_search_source_connector(
 ):
     """
     Update a search source connector.
+    Requires CONNECTORS_UPDATE permission.
     Handles partial updates, including merging changes into the 'config' field.
     """
-    db_connector = await check_ownership(
-        session, SearchSourceConnector, connector_id, user
+    # Get the connector first
+    result = await session.execute(
+        select(SearchSourceConnector).filter(SearchSourceConnector.id == connector_id)
+    )
+    db_connector = result.scalars().first()
+
+    if not db_connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    # Check permission
+    await check_permission(
+        session,
+        user,
+        db_connector.search_space_id,
+        Permission.CONNECTORS_UPDATE.value,
+        "You don't have permission to update this connector",
     )
 
     # Convert the sparse update data (only fields present in request) to a dict
     update_data = connector_update.model_dump(exclude_unset=True)
+
+    # Validate periodic indexing fields
+    # Get the effective values after update
+    effective_is_indexable = update_data.get("is_indexable", db_connector.is_indexable)
+    effective_periodic_enabled = update_data.get(
+        "periodic_indexing_enabled", db_connector.periodic_indexing_enabled
+    )
+    effective_frequency = update_data.get(
+        "indexing_frequency_minutes", db_connector.indexing_frequency_minutes
+    )
+
+    # Validate periodic indexing configuration
+    if effective_periodic_enabled:
+        if not effective_is_indexable:
+            raise HTTPException(
+                status_code=422,
+                detail="periodic_indexing_enabled can only be True for indexable connectors",
+            )
+        if effective_frequency is None:
+            raise HTTPException(
+                status_code=422,
+                detail="indexing_frequency_minutes is required when periodic_indexing_enabled is True",
+            )
+        if effective_frequency <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="indexing_frequency_minutes must be greater than 0",
+            )
+
+        # Automatically set next_scheduled_at if not provided and periodic indexing is being enabled
+        if (
+            "periodic_indexing_enabled" in update_data
+            or "indexing_frequency_minutes" in update_data
+        ) and "next_scheduled_at" not in update_data:
+            # Schedule the next indexing based on the frequency
+            update_data["next_scheduled_at"] = datetime.now(UTC) + timedelta(
+                minutes=effective_frequency
+            )
+    elif (
+        effective_periodic_enabled is False
+        and "periodic_indexing_enabled" in update_data
+    ):
+        # If disabling periodic indexing, clear the next_scheduled_at
+        update_data["next_scheduled_at"] = None
 
     # Special handling for 'config' field
     if "config" in update_data:
@@ -268,20 +405,19 @@ async def update_search_source_connector(
     for key, value in update_data.items():
         # Prevent changing connector_type if it causes a duplicate (check moved here)
         if key == "connector_type" and value != db_connector.connector_type:
-            result = await session.execute(
+            check_result = await session.execute(
                 select(SearchSourceConnector).filter(
                     SearchSourceConnector.search_space_id
                     == db_connector.search_space_id,
-                    SearchSourceConnector.user_id == user.id,
                     SearchSourceConnector.connector_type == value,
                     SearchSourceConnector.id != connector_id,
                 )
             )
-            existing_connector = result.scalars().first()
+            existing_connector = check_result.scalars().first()
             if existing_connector:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"A connector with type {value} already exists in this search space. Each search space can have only one connector of each type per user.",
+                    detail=f"A connector with type {value} already exists in this search space.",
                 )
 
         setattr(db_connector, key, value)
@@ -289,6 +425,36 @@ async def update_search_source_connector(
     try:
         await session.commit()
         await session.refresh(db_connector)
+
+        # Handle periodic schedule updates
+        if (
+            "periodic_indexing_enabled" in update_data
+            or "indexing_frequency_minutes" in update_data
+        ):
+            if (
+                db_connector.periodic_indexing_enabled
+                and db_connector.indexing_frequency_minutes
+            ):
+                # Create or update the periodic schedule
+                success = update_periodic_schedule(
+                    connector_id=db_connector.id,
+                    search_space_id=db_connector.search_space_id,
+                    user_id=str(user.id),
+                    connector_type=db_connector.connector_type,
+                    frequency_minutes=db_connector.indexing_frequency_minutes,
+                )
+                if not success:
+                    logger.warning(
+                        f"Failed to update periodic schedule for connector {db_connector.id}"
+                    )
+            else:
+                # Delete the periodic schedule if disabled
+                success = delete_periodic_schedule(db_connector.id)
+                if not success:
+                    logger.warning(
+                        f"Failed to delete periodic schedule for connector {db_connector.id}"
+                    )
+
         return db_connector
     except IntegrityError as e:
         await session.rollback()
@@ -314,11 +480,39 @@ async def delete_search_source_connector(
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
-    """Delete a search source connector."""
+    """
+    Delete a search source connector.
+    Requires CONNECTORS_DELETE permission.
+    """
     try:
-        db_connector = await check_ownership(
-            session, SearchSourceConnector, connector_id, user
+        # Get the connector first
+        result = await session.execute(
+            select(SearchSourceConnector).filter(
+                SearchSourceConnector.id == connector_id
+            )
         )
+        db_connector = result.scalars().first()
+
+        if not db_connector:
+            raise HTTPException(status_code=404, detail="Connector not found")
+
+        # Check permission
+        await check_permission(
+            session,
+            user,
+            db_connector.search_space_id,
+            Permission.CONNECTORS_DELETE.value,
+            "You don't have permission to delete this connector",
+        )
+
+        # Delete any periodic schedule associated with this connector
+        if db_connector.periodic_indexing_enabled:
+            success = delete_periodic_schedule(connector_id)
+            if not success:
+                logger.warning(
+                    f"Failed to delete periodic schedule for connector {connector_id}"
+                )
+
         await session.delete(db_connector)
         await session.commit()
         return {"message": "Search source connector deleted successfully"}
@@ -350,10 +544,10 @@ async def index_connector_content(
     ),
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
-    background_tasks: BackgroundTasks = None,
 ):
     """
     Index content from a connector to a search space.
+    Requires CONNECTORS_UPDATE permission (to trigger indexing).
 
     Currently supports:
     - SLACK_CONNECTOR: Indexes messages from all accessible Slack channels
@@ -363,24 +557,35 @@ async def index_connector_content(
     - JIRA_CONNECTOR: Indexes issues and comments from Jira
     - DISCORD_CONNECTOR: Indexes messages from all accessible Discord channels
     - LUMA_CONNECTOR: Indexes events from Luma
+    - ELASTICSEARCH_CONNECTOR: Indexes documents from Elasticsearch
+    - WEBCRAWLER_CONNECTOR: Indexes web pages from crawled websites
 
     Args:
         connector_id: ID of the connector to use
         search_space_id: ID of the search space to store indexed content
-        background_tasks: FastAPI background tasks
 
     Returns:
         Dictionary with indexing status
     """
     try:
-        # Check if the connector belongs to the user
-        connector = await check_ownership(
-            session, SearchSourceConnector, connector_id, user
+        # Get the connector first
+        result = await session.execute(
+            select(SearchSourceConnector).filter(
+                SearchSourceConnector.id == connector_id
+            )
         )
+        connector = result.scalars().first()
 
-        # Check if the search space belongs to the user
-        _search_space = await check_ownership(
-            session, SearchSpace, search_space_id, user
+        if not connector:
+            raise HTTPException(status_code=404, detail="Connector not found")
+
+        # Check if user has permission to update connectors (indexing is an update operation)
+        await check_permission(
+            session,
+            user,
+            search_space_id,
+            Permission.CONNECTORS_UPDATE.value,
+            "You don't have permission to index content in this search space",
         )
 
         # Handle different connector types
@@ -407,107 +612,83 @@ async def index_connector_content(
         indexing_to = end_date if end_date else today_str
 
         if connector.connector_type == SearchSourceConnectorType.SLACK_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import (
+                index_slack_messages_task,
+            )
+
             logger.info(
                 f"Triggering Slack indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_slack_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_slack_messages_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Slack indexing started in the background."
 
         elif connector.connector_type == SearchSourceConnectorType.NOTION_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import index_notion_pages_task
+
             logger.info(
                 f"Triggering Notion indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_notion_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_notion_pages_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Notion indexing started in the background."
 
         elif connector.connector_type == SearchSourceConnectorType.GITHUB_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import index_github_repos_task
+
             logger.info(
                 f"Triggering GitHub indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_github_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_github_repos_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "GitHub indexing started in the background."
 
         elif connector.connector_type == SearchSourceConnectorType.LINEAR_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import index_linear_issues_task
+
             logger.info(
                 f"Triggering Linear indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_linear_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_linear_issues_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Linear indexing started in the background."
 
         elif connector.connector_type == SearchSourceConnectorType.JIRA_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import index_jira_issues_task
+
             logger.info(
                 f"Triggering Jira indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_jira_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_jira_issues_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Jira indexing started in the background."
 
         elif connector.connector_type == SearchSourceConnectorType.CONFLUENCE_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import (
+                index_confluence_pages_task,
+            )
+
             logger.info(
                 f"Triggering Confluence indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_confluence_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_confluence_pages_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Confluence indexing started in the background."
 
         elif connector.connector_type == SearchSourceConnectorType.CLICKUP_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import index_clickup_tasks_task
+
             logger.info(
                 f"Triggering ClickUp indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_clickup_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_clickup_tasks_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "ClickUp indexing started in the background."
 
@@ -515,79 +696,94 @@ async def index_connector_content(
             connector.connector_type
             == SearchSourceConnectorType.GOOGLE_CALENDAR_CONNECTOR
         ):
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import (
+                index_google_calendar_events_task,
+            )
+
             logger.info(
                 f"Triggering Google Calendar indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_google_calendar_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_google_calendar_events_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Google Calendar indexing started in the background."
         elif connector.connector_type == SearchSourceConnectorType.AIRTABLE_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import (
+                index_airtable_records_task,
+            )
+
             logger.info(
                 f"Triggering Airtable indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_airtable_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_airtable_records_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Airtable indexing started in the background."
         elif (
             connector.connector_type == SearchSourceConnectorType.GOOGLE_GMAIL_CONNECTOR
         ):
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import (
+                index_google_gmail_messages_task,
+            )
+
             logger.info(
                 f"Triggering Google Gmail indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_google_gmail_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_google_gmail_messages_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Google Gmail indexing started in the background."
 
         elif connector.connector_type == SearchSourceConnectorType.DISCORD_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import (
+                index_discord_messages_task,
+            )
+
             logger.info(
                 f"Triggering Discord indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_discord_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_discord_messages_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Discord indexing started in the background."
 
         elif connector.connector_type == SearchSourceConnectorType.LUMA_CONNECTOR:
-            # Run indexing in background
+            from app.tasks.celery_tasks.connector_tasks import index_luma_events_task
+
             logger.info(
                 f"Triggering Luma indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
             )
-            background_tasks.add_task(
-                run_luma_indexing_with_new_session,
-                connector_id,
-                search_space_id,
-                str(user.id),
-                indexing_from,
-                indexing_to,
+            index_luma_events_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
             )
             response_message = "Luma indexing started in the background."
+
+        elif (
+            connector.connector_type
+            == SearchSourceConnectorType.ELASTICSEARCH_CONNECTOR
+        ):
+            from app.tasks.celery_tasks.connector_tasks import (
+                index_elasticsearch_documents_task,
+            )
+
+            logger.info(
+                f"Triggering Elasticsearch indexing for connector {connector_id} into search space {search_space_id}"
+            )
+            index_elasticsearch_documents_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
+            )
+            response_message = "Elasticsearch indexing started in the background."
+
+        elif connector.connector_type == SearchSourceConnectorType.WEBCRAWLER_CONNECTOR:
+            from app.tasks.celery_tasks.connector_tasks import index_crawled_urls_task
+
+            logger.info(
+                f"Triggering web pages indexing for connector {connector_id} into search space {search_space_id} from {indexing_from} to {indexing_to}"
+            )
+            index_crawled_urls_task.delay(
+                connector_id, search_space_id, str(user.id), indexing_from, indexing_to
+            )
+            response_message = "Web page indexing started in the background."
 
         else:
             raise HTTPException(
@@ -1269,14 +1465,22 @@ async def run_google_gmail_indexing(
 ):
     """Runs the Google Gmail indexing task and updates the timestamp."""
     try:
+        # Convert days_back to start_date string in YYYY-MM-DD format
+        from datetime import datetime, timedelta
+
+        start_date_obj = datetime.now() - timedelta(days=days_back)
+        start_date = start_date_obj.strftime("%Y-%m-%d")
+        end_date = None  # No end date, index up to current time
+
         indexed_count, error_message = await index_google_gmail_messages(
             session,
             connector_id,
             search_space_id,
             user_id,
-            max_messages,
-            days_back,
+            start_date=start_date,
+            end_date=end_date,
             update_last_indexed=False,
+            max_messages=max_messages,
         )
         if error_message:
             logger.error(
@@ -1358,3 +1562,122 @@ async def run_luma_indexing(
             )
     except Exception as e:
         logger.error(f"Error in background Luma indexing task: {e!s}")
+
+
+async def run_elasticsearch_indexing_with_new_session(
+    connector_id: int,
+    search_space_id: int,
+    user_id: str,
+    start_date: str,
+    end_date: str,
+):
+    """Wrapper to run Elasticsearch indexing with its own database session."""
+    logger.info(
+        f"Background task started: Indexing Elasticsearch connector {connector_id} into space {search_space_id}"
+    )
+    async with async_session_maker() as session:
+        await run_elasticsearch_indexing(
+            session, connector_id, search_space_id, user_id, start_date, end_date
+        )
+    logger.info(
+        f"Background task finished: Indexing Elasticsearch connector {connector_id}"
+    )
+
+
+async def run_elasticsearch_indexing(
+    session: AsyncSession,
+    connector_id: int,
+    search_space_id: int,
+    user_id: str,
+    start_date: str,
+    end_date: str,
+):
+    """Runs the Elasticsearch indexing task and updates the timestamp."""
+    try:
+        indexed_count, error_message = await index_elasticsearch_documents(
+            session,
+            connector_id,
+            search_space_id,
+            user_id,
+            start_date,
+            end_date,
+            update_last_indexed=False,
+        )
+        if error_message:
+            logger.error(
+                f"Elasticsearch indexing failed for connector {connector_id}: {error_message}"
+            )
+        else:
+            logger.info(
+                f"Elasticsearch indexing successful for connector {connector_id}. Indexed {indexed_count} documents."
+            )
+            # Update the last indexed timestamp only on success
+            await update_connector_last_indexed(session, connector_id)
+            await session.commit()
+    except Exception as e:
+        await session.rollback()
+        logger.error(
+            f"Critical error in run_elasticsearch_indexing for connector {connector_id}: {e}",
+            exc_info=True,
+        )
+
+
+# Add new helper functions for crawled web page indexing
+async def run_web_page_indexing_with_new_session(
+    connector_id: int,
+    search_space_id: int,
+    user_id: str,
+    start_date: str,
+    end_date: str,
+):
+    """
+    Create a new session and run the Web page indexing task.
+    This prevents session leaks by creating a dedicated session for the background task.
+    """
+    async with async_session_maker() as session:
+        await run_web_page_indexing(
+            session, connector_id, search_space_id, user_id, start_date, end_date
+        )
+
+
+async def run_web_page_indexing(
+    session: AsyncSession,
+    connector_id: int,
+    search_space_id: int,
+    user_id: str,
+    start_date: str,
+    end_date: str,
+):
+    """
+    Background task to run Web page indexing.
+    Args:
+        session: Database session
+        connector_id: ID of the webcrawler connector
+        search_space_id: ID of the search space
+        user_id: ID of the user
+        start_date: Start date for indexing
+        end_date: End date for indexing
+    """
+    try:
+        documents_processed, error_or_warning = await index_crawled_urls(
+            session=session,
+            connector_id=connector_id,
+            search_space_id=search_space_id,
+            user_id=user_id,
+            start_date=start_date,
+            end_date=end_date,
+            update_last_indexed=False,  # Don't update timestamp in the indexing function
+        )
+
+        # Only update last_indexed_at if indexing was successful (either new docs or updated docs)
+        if documents_processed > 0:
+            await update_connector_last_indexed(session, connector_id)
+            logger.info(
+                f"Web page indexing completed successfully: {documents_processed} documents processed"
+            )
+        else:
+            logger.error(
+                f"Web page indexing failed or no documents processed: {error_or_warning}"
+            )
+    except Exception as e:
+        logger.error(f"Error in background Web page indexing task: {e!s}")
